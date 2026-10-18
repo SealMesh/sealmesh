@@ -1,0 +1,46 @@
+[package]
+name = "sealmesh"
+description = "See what your coding agents are working on across machines, without messaging anyone"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+include = ["src/**", "Cargo.toml"]
+
+[[bin]]
+name = "sealmesh"
+path = "src/main.rs"
+
+[lib]
+name = "sealmesh"
+path = "src/lib.rs"
+
+[dependencies]
+sealmesh-chat-wire = { workspace = true }
+sealmesh-proto = { workspace = true }
+sealmesh-wire = { workspace = true }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }
+futures-util = { workspace = true }
+gix = { workspace = true }
+jiff = { workspace = true }
+octocrab = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sysinfo = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "net", "sync", "io-util"] }
+tokio-tungstenite = { workspace = true }
+toml = { workspace = true }
+url = { workspace = true }
+
+[lints]
+workspace = true

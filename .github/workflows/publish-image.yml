@@ -1,0 +1,52 @@
+name: Publish router image
+
+# Called by release.yml (dist) once a version tag's artifacts are hosted.
+# Builds the router image and pushes it to ghcr.io as `<version>` and
+# `latest`. Plain docker commands, so there is no third-party action to pin.
+# See docs/releasing.md.
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      IMAGE: ghcr.io/sealmesh/sealmesh-server
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Version from the release plan
+        id: version
+        env:
+          PLAN: ${{ inputs.plan }}
+        run: |
+          set -euo pipefail
+          tag=$(printf '%s' "$PLAN" | jq -r '.announcement_tag')
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          docker build \
+            --label org.opencontainers.image.source=https://github.com/SealMesh/sealmesh \
+            --label org.opencontainers.image.licenses=AGPL-3.0-only \
+            --label org.opencontainers.image.version=${{ steps.version.outputs.version }} \
+            -t "$IMAGE:${{ steps.version.outputs.version }}" -t "$IMAGE:latest" .
+
+      - name: Push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:${{ steps.version.outputs.version }}"
+          docker push "$IMAGE:latest"

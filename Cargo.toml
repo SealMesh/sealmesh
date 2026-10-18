@@ -1,0 +1,93 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sealmesh",
+    "crates/sealmesh-chat-wire",
+    "crates/sealmesh-mcp",
+    "crates/sealmesh-proto",
+    "crates/sealmesh-server",
+    "crates/sealmesh-wire",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+repository = "https://github.com/SealMesh/sealmesh"
+homepage = "https://github.com/SealMesh/sealmesh"
+keywords = ["agents", "mcp", "coordination", "claude-code", "privacy"]
+categories = ["command-line-utilities", "development-tools"]
+
+# Each crate's `license` is its own: AGPL-3.0-only for the programs (sealmesh,
+# sealmesh-server, sealmesh-mcp), Apache-2.0 for the protocol libraries.
+
+[workspace.dependencies]
+sealmesh = { path = "crates/sealmesh", version = "0.1.0" }
+sealmesh-chat-wire = { path = "crates/sealmesh-chat-wire", version = "0.1.0" }
+sealmesh-proto = { path = "crates/sealmesh-proto", version = "0.1.0" }
+sealmesh-wire = { path = "crates/sealmesh-wire", version = "0.1.0" }
+
+anyhow = "1"
+# The DynamoDB client for room history, and the credential/region
+# resolution its task role arrives through. Only `sealmesh-server` takes
+# either; the CLI and both wire crates stay free of them.
+#
+# Both are `default-features = false` on purpose, and the two features dropped
+# from each set are dropped for a reason (rule 30). `sso` and
+# `credentials-process` pull the SSO clients and a subprocess credential path
+# the router cannot reach: on Fargate the task role arrives through the ECS
+# container credential provider, which needs only `rt-tokio`. `rustls` is the
+# *legacy* hyper-0.14 TLS stack; `default-https-client` already resolves to
+# `aws-smithy-http-client/rustls-aws-lc`, so taking both would link two TLS
+# stacks to use one.
+aws-config = { version = "1.12.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+aws-sdk-dynamodb = { version = "1.126.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+axum = { version = "0.8.6", default-features = false, features = ["http1", "json", "tokio", "query"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6.0.0"
+futures-util = { version = "0.3.31", default-features = false, features = ["sink"] }
+gix = { version = "0.86.0", default-features = false, features = ["max-performance-safe", "sha1", "status", "revision", "dirwalk", "parallel"] }
+jiff = { version = "0.2.35", features = ["serde"] }
+# `O_NONBLOCK`, so the MCP server can open a file that might be a fifo
+# without blocking. Already in the tree through tokio; no new crate.
+libc = "0.2.189"
+octocrab = { version = "0.54.1", default-features = false, features = [
+    "follow-redirect",
+    "retry",
+    "rustls",
+    "timeout",
+    "tracing",
+    "default-client",
+    "rustls-ring",
+    "jwt-aws-lc-rs",
+] }
+rand = "0.9.2"
+# Room history for a self-hosted router: one file, no service to run. `bundled`
+# compiles SQLite in, so the router has no system library to match.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10.9"
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+subtle = "2.6.1"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt", "macros", "time"] }
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+toml = "1.1.4"
+tower-http = { version = "0.6.7", features = ["limit"] }
+url = "2.5.8"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -1,0 +1,5 @@
+# Secrets scan, locally (scripts/hooks/pre-commit) and in CI.
+# No credential ever lives in this repository, so every finding is a bug: fix
+# the commit, don't allowlist the secret.
+[extend]
+useDefault = true

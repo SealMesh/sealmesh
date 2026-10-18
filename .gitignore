@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+
+.DS_Store
+
+/sealmesh.local.toml
+
+# Local agent and editor config never ships.
+/.claude/

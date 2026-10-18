@@ -1,0 +1,59 @@
+[package]
+name = "sealmesh-mcp"
+description = "The MCP server a coding agent mounts over stdio to reach sealmesh — Claude Code and Codex both"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+include = ["src/**", "Cargo.toml"]
+
+[[bin]]
+name = "sealmesh-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "sealmesh_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+# The CLI library, for its credential and router-connection path. Depending on
+# it rather than copying `github_auth` is the point: one place obtains a token.
+sealmesh = { workspace = true }
+# The room tools' message shapes: the capped `Body`, the closed `MessageKind`
+# and `RoomId`, so a post is built from the chat wire's own types (rules 9, 45).
+sealmesh-chat-wire = { workspace = true }
+sealmesh-proto = { workspace = true }
+sealmesh-wire = { workspace = true }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+# The home directory, to find the Claude Code config roots that hold the
+# parent session's file. Already in the lockfile through the CLI.
+dirs = { workspace = true }
+# `O_NONBLOCK` for opening the parent session file, which could be swapped for
+# a fifo between a check and an open. Already in the lockfile through tokio.
+libc = { workspace = true }
+# The official Rust SDK. `server` + `transport-io` only: no HTTP transport, no
+# OAuth, no child-process spawning, and no `rmcp-macros` tool macros until a
+# tool needs them. `server` still brings proc-macro crates of its own:
+# `pastey`, `schemars_derive` and `ref-cast-impl`.
+rmcp = { version = "3.5.0", default-features = false, features = ["server", "transport-io"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "io-std", "time"] }
+
+[dev-dependencies]
+# A stand-in router for `fleet_status`'s tests, so the query path is exercised
+# over a real WebSocket. Both are already in the lockfile through the CLI.
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
+tokio-tungstenite = { workspace = true }
+
+[lints]
+workspace = true

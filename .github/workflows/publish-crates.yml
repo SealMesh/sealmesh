@@ -1,0 +1,31 @@
+name: Publish crates
+
+# Called by release.yml (dist) once a version tag's artifacts are hosted.
+# Publishes every publishable workspace crate to crates.io, in dependency
+# order. A published version can be yanked but never replaced: a fix always
+# ships as a new version. See docs/releasing.md.
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  crates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace --locked

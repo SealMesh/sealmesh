@@ -1,0 +1,8 @@
+#!/bin/sh
+# Refuse a commit whose staged changes contain a secret.
+# Enable once per clone: git config core.hooksPath scripts/hooks
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed (brew install gitleaks); skipping the secrets scan" >&2
+  exit 0
+fi
+exec gitleaks git --staged --redact --no-banner --config .gitleaks.toml

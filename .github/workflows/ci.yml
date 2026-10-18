@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      # The DynamoDB store is off by default; keep it compiling and tested.
+      - name: Clippy and test with the dynamodb feature
+        run: |
+          cargo clippy -p sealmesh-server --all-targets --features dynamodb -- -D warnings
+          cargo test -p sealmesh-server --all-targets --features dynamodb
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      # The CLI, pinned by version and checksum, rather than the gitleaks
+      # action, which needs a license for organizations.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" gitleaks
+          sudo install gitleaks /usr/local/bin/gitleaks
+
+      - name: Scan the history for secrets
+        run: gitleaks git --redact --no-banner --config .gitleaks.toml .
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
+        with:
+          command: check advisories bans licenses sources
+
+      - name: Check GitHub Actions are pinned to commit SHAs
+        run: |
+          set -euo pipefail
+          status=0
+          for workflow in .github/workflows/*.yml; do
+            unpinned=$(grep -nE '^\s*-?\s*uses:\s*[^ ]+@' "$workflow" \
+              | grep -vE '@[0-9a-f]{40}(\s|$)' || true)
+            [ -z "$unpinned" ] && continue
+
+            echo "::error file=$workflow::Action pinned to a mutable tag. Pin the commit SHA and keep the tag in a trailing comment."
+            echo "$unpinned" | sed "s|^|  $workflow:|"
+            status=1
+          done
+          exit "$status"
