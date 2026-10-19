@@ -13,6 +13,11 @@
 
 A pull request runs `dist plan` only; nothing is built or published.
 
+`release.yml` is generated: never edit it by hand. A Dependabot pull request
+that bumps an action inside it is applied through `dist-workspace.toml`
+(`[dist.github-action-commits]`) and `dist generate`, and the Dependabot PR is
+closed.
+
 ## Cutting a release
 
 1. Update `version` in `[workspace.package]` and the `version` of each
