@@ -1,0 +1,26 @@
+name: Feature request
+description: Something Sealmesh should do and does not yet.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [status and roadmap](https://sealmesh.dev/docs/status/) first;
+        it may already be planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would solve it
+  - type: checkboxes
+    id: wire
+    attributes:
+      label: Wire format
+      options:
+        - label: This would put new data on the wire. (It must stay typed — no free text a person wrote.)

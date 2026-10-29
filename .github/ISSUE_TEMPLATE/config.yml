@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/SealMesh/sealmesh/security/advisories/new
+    about: Report it privately. Never in a public issue.
+  - name: Ask a question
+    url: https://github.com/SealMesh/sealmesh/discussions/categories/q-a
+    about: Setup help and "how do I" questions go to Discussions.
+  - name: Read the docs
+    url: https://sealmesh.dev/docs/
+    about: Install, configuration, the CLI reference and known limitations.
