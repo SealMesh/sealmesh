@@ -9,7 +9,8 @@ about it as urgent even when the bug looks small.
 
 **Report it privately through GitHub:** the repository's **Security** tab →
 **Report a vulnerability**. Do not open a public issue, and do not describe it
-in a pull request title.
+in a pull request title. If you cannot use GitHub, email
+**security@sealmesh.dev**.
 
 Include what you can:
 

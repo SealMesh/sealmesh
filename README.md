@@ -1,7 +1,10 @@
 # Sealmesh
 
-`read-only · answered live · nothing kept`
+`read-only · answered live · no agent data stored`
 
+[![CI](https://img.shields.io/github/actions/workflow/status/SealMesh/sealmesh/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/SealMesh/sealmesh/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/SealMesh/sealmesh?style=flat-square&label=scorecard)](https://scorecard.dev/viewer/?uri=github.com/SealMesh/sealmesh)
+[![crates.io](https://img.shields.io/crates/v/sealmesh?style=flat-square&color=24292f)](https://crates.io/crates/sealmesh)
 [![version](https://img.shields.io/badge/version-0.1.0-24292f?style=flat-square)](docs/CHANGELOG.md)
 [![rust](https://img.shields.io/badge/rust-1.95-24292f?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
 [![unsafe](https://img.shields.io/badge/unsafe-forbidden-24292f?style=flat-square)](Cargo.toml)
@@ -9,7 +12,13 @@
 
 See what your coding agents are working on, across every machine, without asking anyone.
 
-[Install](#installation) · [Commands](#commands) · [What leaves a machine](#what-leaves-a-machine) · [Crates](#crates) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
+> [!NOTE]
+> **Early preview — v0.1, under construction.** Sealmesh works end to end, but
+> it is young: Claude Code is the only agent read natively, Windows is not
+> supported, and the protocol may still change between minor versions. The
+> [status page](https://sealmesh.dev/docs/status/) lists what is missing.
+
+**Docs: [sealmesh.dev](https://sealmesh.dev)** · [Install](#installation) · [Commands](#commands) · [What leaves a machine](#what-leaves-a-machine) · [Crates](#crates) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
 ```
 $ sealmesh who
@@ -202,9 +211,11 @@ Removing someone from the organization removes their access here, with nobody
 touching sealmesh.
 
 The cost, stated plainly: the handshake sends a bearer token rather than a
-signature, so the transport has to be encrypted. The router uses it for two API
-calls and drops it — never stored, never logged, and redacted in `Debug` so a
-careless log line later cannot leak it.
+signature, so the transport has to be encrypted. The router holds it in memory
+for as long as that connection stays open — joining a room and re-checking
+access later use your own credential — and drops it when the connection closes.
+It is never written to disk, never logged, and redacted in `Debug` so a careless
+log line later cannot leak it.
 
 Note the asymmetry, because it is deliberate: **running** the router needs a
 host — any host: one binary and one SQLite file. **Using** it needs nothing but
@@ -281,13 +292,15 @@ launchd, the off switch, troubleshooting, and running your own router, is
 **You need** `gh`. That is the whole credential story — membership of the
 GitHub org is what grants access.
 
-From the first release, install the CLI and the MCP server with any of:
+Install the CLI and the MCP server with any of (macOS and Linux):
 
 ```sh
 brew install sealmesh/tap/sealmesh sealmesh/tap/sealmesh-mcp   # Homebrew
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/SealMesh/sealmesh/releases/latest/download/sealmesh-installer.sh | sh
 cargo install --locked sealmesh sealmesh-mcp
-# or a prebuilt binary from https://github.com/SealMesh/sealmesh/releases
 ```
+
+Prebuilt binaries are on the [releases page](https://github.com/SealMesh/sealmesh/releases).
 
 The router ships as `ghcr.io/sealmesh/sealmesh-server`, or as a binary on the
 same releases page.
