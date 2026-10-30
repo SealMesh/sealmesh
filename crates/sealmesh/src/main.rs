@@ -15,10 +15,10 @@ use sealmesh::{
 /// off every error path. Flush left and with no trailing newline: clap trims
 /// the first line's indent, and adds its own blank line before `about`.
 const BANNER: &str = "\
-▄▀█ █▀▀ █▀▀ █▄ █ ▀█▀ █ █ █ ▄▀█ ▀█▀ █▀▀ █ █
-█▀█ █▄█ ██▄ █ ▀█  █  ▀▄▀▄▀ █▀█  █  █▄▄ █▀█
-──────────────────────────────────────────
-read-only · answered live · nothing kept";
+█▀ █▀▀ ▄▀█ █   █▀▄▀█ █▀▀ █▀ █ █
+▄█ ██▄ █▀█ █▄▄ █ ▀ █ ██▄ ▄█ █▀█
+───────────────────────────────
+read-only · answered live · no agent data stored";
 
 #[derive(Parser)]
 #[command(

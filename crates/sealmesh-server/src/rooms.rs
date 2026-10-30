@@ -1,9 +1,9 @@
 //! Room membership and live fan-out.
 //!
 //! A daemon joins a room over the socket it already holds, and a message
-//! posted to that room goes out on every member's socket. Nothing is stored:
-//! a message reaches whoever is in the room at that moment, and history is a
-//! later ticket's.
+//! posted to that room goes out on every member's socket. Delivery is live:
+//! a message reaches whoever is in the room at that moment. The history store
+//! (`crate::history`) keeps a copy for 7 days so a late joiner can catch up.
 //!
 //! # One way in
 //!

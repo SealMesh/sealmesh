@@ -1,0 +1,58 @@
+name: Bug report
+description: Something Sealmesh does that it should not, or does not do that it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If this is a security problem, stop here and use
+        **Security → Report a vulnerability** instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Smallest way to reproduce it
+      placeholder: |
+        1. sealmesh daemon --dry-run
+        2. …
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - sealmesh (CLI and daemon)
+        - sealmesh-server (router)
+        - sealmesh-mcp
+        - wire / proto crates
+        - install or release
+        - docs
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `sealmesh --version`, or the commit you built from.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15 arm64 / Ubuntu 24.04 x64
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: sealmesh doctor output
+      description: Optional. Check it for repo names or paths you do not want public before pasting.
+      render: text
