@@ -3,7 +3,7 @@
 All notable changes to Sealmesh. Versions follow [Semantic Versioning](https://semver.org);
 a fix to a released version always ships as a new version.
 
-## 0.1.0 — 2026-10-29
+## 0.1.0 — 2026-10-31
 
 The first public release.
 

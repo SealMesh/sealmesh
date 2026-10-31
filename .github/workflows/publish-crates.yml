@@ -4,11 +4,21 @@ name: Publish crates
 # Publishes every publishable workspace crate to crates.io, in dependency
 # order. A published version can be yanked but never replaced: a fix always
 # ships as a new version. See docs/releasing.md.
+#
+# Idempotent: a crate whose version is already on crates.io is skipped, so a
+# run that stopped halfway (crates.io rate-limits new crate names) is finished
+# by running it again, by hand, against the release tag.
 
 on:
   workflow_call:
     inputs:
       plan:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish from, e.g. v0.1.0
         required: true
         type: string
 
@@ -21,6 +31,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: Install toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -28,4 +41,21 @@ jobs:
       - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --workspace --locked
+        run: |
+          set -euo pipefail
+          excludes=()
+          while read -r name version; do
+            if curl -sf -o /dev/null -A "sealmesh-release (github.com/SealMesh/sealmesh)" \
+                "https://crates.io/api/v1/crates/${name}/${version}"; then
+              echo "${name} ${version} is already on crates.io; skipping"
+              excludes+=(--exclude "$name")
+            fi
+          done < <(cargo metadata --no-deps --format-version 1 --locked \
+            | jq -r '.packages[] | select(.publish != []) | "\(.name) \(.version)"')
+          total=$(cargo metadata --no-deps --format-version 1 --locked \
+            | jq '[.packages[] | select(.publish != [])] | length')
+          if [ "$(( ${#excludes[@]} / 2 ))" -eq "$total" ]; then
+            echo "Every crate is already published."
+            exit 0
+          fi
+          cargo publish --workspace --locked "${excludes[@]}"

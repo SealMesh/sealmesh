@@ -61,7 +61,16 @@ different builds answer to one name.
 ### A release that stopped halfway
 
 The publish jobs run independently once the artifacts are hosted, so a failure
-can leave some channels published and others not. Reconcile, then release
-again: rerun the failed job from the workflow run if the version is still
-unpublished there, or, if crates.io already holds the version, fix forward with
-the next patch version.
+can leave some channels published and others not. Reconcile, then finish the
+release:
+
+- **crates.io stopped partway** (most often HTTP 429: crates.io rate-limits
+  brand-new crate names). Wait out the time in the error, then run
+  `publish-crates.yml` by hand with the release tag:
+  `gh workflow run publish-crates.yml -f tag=vX.Y.Z`. It skips every crate
+  whose version is already on crates.io and publishes the rest. Rerunning the
+  failed job from the release run does not do this, because a rerun uses the
+  workflow as it was at the tag.
+- **Any other channel:** rerun the failed job from the workflow run.
+- **The released code itself is wrong:** fix forward with the next patch
+  version.
