@@ -13,8 +13,8 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
-repository = "https://github.com/SealMesh/sealmesh"
-homepage = "https://github.com/SealMesh/sealmesh"
+repository = "https://github.com/allocmemory/sealmesh"
+homepage = "https://github.com/allocmemory/sealmesh"
 keywords = ["agents", "mcp", "coordination", "claude-code", "privacy"]
 categories = ["command-line-utilities", "development-tools"]
 

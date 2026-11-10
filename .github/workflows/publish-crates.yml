@@ -45,7 +45,7 @@ jobs:
           set -euo pipefail
           excludes=()
           while read -r name version; do
-            if curl -sf -o /dev/null -A "sealmesh-release (github.com/SealMesh/sealmesh)" \
+            if curl -sf -o /dev/null -A "sealmesh-release (github.com/allocmemory/sealmesh)" \
                 "https://crates.io/api/v1/crates/${name}/${version}"; then
               echo "${name} ${version} is already on crates.io; skipping"
               excludes+=(--exclude "$name")
