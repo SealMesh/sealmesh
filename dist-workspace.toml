@@ -21,6 +21,11 @@ install-path = "CARGO_HOME"
 install-updater = false
 # Which actions to run on pull requests
 pr-run-mode = "plan"
+# release.yml carries hand edits dist can't express: read-only token by
+# default, `contents: write` only on the job that creates the GitHub Release.
+# Without this, `dist plan` fails because the file differs from what it would
+# generate. Re-apply the edits after every `dist generate` (docs/releasing.md).
+allow-dirty = ["ci"]
 
 # What the custom publish jobs may do. A called workflow can't ask for more
 # than its caller grants, so these must match the `permissions:` declared in
