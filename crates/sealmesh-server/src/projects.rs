@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use sealmesh_wire::{ProjectId, RepoSlug};
 use serde::Deserialize;
 
+use crate::named_rooms::NamedRooms;
+
 pub const PROJECTS_VAR: &str = "SEALMESH_PROJECTS";
 
 pub const MAX_PROJECTS_BYTES: usize = 64 * 1024;
@@ -39,10 +41,16 @@ struct RawProject {
 /// Which project each repo belongs to. Built only from the router's own
 /// environment, and only whole: any problem refuses the entire map, because a
 /// half-loaded one silently changes who can join what.
+///
+/// It also carries the router's [`NamedRooms`]: the other half of "who may
+/// join which room", kept beside the project half so every path that already
+/// threads the map (joins, posts, re-checks, room keys) sees both. A cloud
+/// router's is always empty. Never part of [`ProjectMap::to_wire`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectMap {
     by_repo: BTreeMap<String, ProjectId>,
     projects: BTreeMap<ProjectId, Vec<RepoSlug>>,
+    named: NamedRooms,
 }
 
 impl ProjectMap {
@@ -91,6 +99,18 @@ impl ProjectMap {
             map.projects.insert(project.id, project.repos);
         }
         Ok(map)
+    }
+
+    /// This map with `named` as its named rooms (std and otw routers only).
+    pub fn with_named_rooms(mut self, named: NamedRooms) -> Self {
+        self.named = named;
+        self
+    }
+
+    /// The named rooms this router was configured with. Empty on a cloud
+    /// router.
+    pub fn named_rooms(&self) -> &NamedRooms {
+        &self.named
     }
 
     /// `None` is a legal answer: a repo in no project gets no rooms at all.

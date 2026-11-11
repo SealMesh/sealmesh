@@ -7,6 +7,9 @@ pub mod github;
 pub mod history;
 pub mod http;
 pub mod listen;
+pub mod local_owner;
+pub mod mode_directory;
+pub mod named_rooms;
 pub mod projects;
 pub mod query;
 pub mod registry;
@@ -14,4 +17,7 @@ pub mod room_access;
 pub mod room_budget;
 pub mod room_reads;
 pub mod rooms;
+pub mod serve;
 pub mod turn_cap;
+
+pub use serve::{Listener, run};

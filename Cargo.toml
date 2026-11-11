@@ -25,6 +25,7 @@ categories = ["command-line-utilities", "development-tools"]
 sealmesh = { path = "crates/sealmesh", version = "0.1.0" }
 sealmesh-chat-wire = { path = "crates/sealmesh-chat-wire", version = "0.1.0" }
 sealmesh-proto = { path = "crates/sealmesh-proto", version = "0.1.0" }
+sealmesh-server = { path = "crates/sealmesh-server", version = "0.1.0", default-features = false }
 sealmesh-wire = { path = "crates/sealmesh-wire", version = "0.1.0" }
 
 anyhow = "1"

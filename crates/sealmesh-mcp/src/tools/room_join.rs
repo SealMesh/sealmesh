@@ -151,7 +151,7 @@ pub(crate) async fn join(
     let resolved = bounded(context.call_deadline, context.resolve(&checkout)).await?;
     let project_named = resolved
         .iter()
-        .any(|room| RoomScope::of(room) == RoomScope::Project);
+        .any(|room| RoomScope::of(room) == Some(RoomScope::Project));
     let project_state = match (project, project_named) {
         (false, _) => ProjectRoom::NotRequested,
         (true, false) => ProjectRoom::NotEnabled,
@@ -159,7 +159,7 @@ pub(crate) async fn join(
     };
     let wanted: Vec<RoomId> = resolved
         .into_iter()
-        .filter(|room| project || RoomScope::of(room) != RoomScope::Project)
+        .filter(|room| project || RoomScope::of(room) != Some(RoomScope::Project))
         .collect();
     if wanted.is_empty() {
         return Err(RoomFailure::NoRoom);
@@ -168,7 +168,9 @@ pub(crate) async fn join(
     // that room, and does not discard the joins before it.
     let mut rooms = Vec::with_capacity(wanted.len());
     for room in wanted {
-        let scope = RoomScope::of(&room);
+        let Some(scope) = RoomScope::of(&room) else {
+            continue;
+        };
         let asked =
             tokio::time::timeout_at(deadline, context.ask(&Request::Join { room, holder: None }))
                 .await;

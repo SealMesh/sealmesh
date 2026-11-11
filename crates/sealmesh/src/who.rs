@@ -64,7 +64,7 @@ pub struct Answers {
 
 pub async fn fetch_all(config: &Config, progress: &Progress) -> Result<Answers> {
     progress.set(Phase::Connecting);
-    let Connected { socket, host } = client::connect(&config.server, Role::Reader).await?;
+    let Connected { socket, host } = client::connect(config, Role::Reader).await?;
     let _ = host;
     ask(socket, |phase| {
         progress.set(phase);

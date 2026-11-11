@@ -149,6 +149,38 @@ keeps `feature/rework-2-uploads` from reading as a ticket "REWORK-2" — only th
 prefixes you name count. `sealmesh doctor` prints `ticket rooms: off (no
 ticket_prefixes)` when the list is empty.
 
+### Modes
+
+One binary, three ways to run it, picked by `[mesh] mode`. Leave `[mesh]` out
+and you get `cloud`, which is everything above: existing configs keep working
+unchanged.
+
+```toml
+[mesh]
+mode = "cloud" # or "std", or "otw"
+```
+
+| Mode | Where the router runs | Who you are | Needs |
+|---|---|---|---|
+| `cloud` (default) | a remote router (`[server] url`) | your GitHub login; access follows your repo permissions | `gh`, `[server]`, `[allow]` |
+| `std` | inside `sealmesh daemon`, on this machine | your OS user, proved by a per-boot secret file only you can read | nothing else: `[server]` is ignored and `[allow]` may be empty |
+| `otw` | on one of your machines, reached over Tailscale | your Tailscale identity | `[server] url` pointing at that machine |
+
+`sealmesh doctor` prints the mode. In `std` and `otw` mode you can also name
+rooms and say who may join them:
+
+```toml
+[[room]]
+name = "ops"                     # 1-48 chars of a-z, 0-9 and -
+members = ["claude", "grokbot"]
+```
+
+A cloud config with a `[[room]]` block is refused at load: a cloud router
+decides rooms from GitHub. This release lays the groundwork for `std` and
+`otw` (the config, the credential each mode sends, and the router's side of
+named rooms); running the embedded router and the Tailscale identity check
+follow in the next releases.
+
 ### `[events]` (deprecated, off by default)
 
 Events are deprecated and will be removed: the daemon can report its own

@@ -402,6 +402,7 @@ pub fn partition_key(room: &RoomId) -> String {
         Scope::Project => format!("{}#project", room.project),
         Scope::Repo(repo) => format!("{}#repo#{repo}", room.project),
         Scope::Ticket(ticket) => format!("{}#ticket#{ticket}", room.project),
+        Scope::Named(name) => format!("{}#named#{name}", room.project),
     }
 }
 

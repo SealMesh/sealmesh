@@ -2467,6 +2467,113 @@ mod tests {
         assert_eq!(cut.as_str(), "a".repeat(62));
     }
 
+    /// `Scope` exactly as v0.1.0 knows it: no `Named`.
+    #[allow(dead_code)]
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "snake_case", deny_unknown_fields)]
+    enum ScopeV010 {
+        Ticket(sealmesh_wire::TicketId),
+        Repo(RepoSlug),
+        Project,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RoomIdV010 {
+        project: ProjectId,
+        scope: ScopeV010,
+    }
+
+    /// The room-carrying frames as a v0.1.0 peer decodes them.
+    #[allow(dead_code)]
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+    enum RoomFrameV010 {
+        Join { room: RoomIdV010 },
+        Leave { room: RoomIdV010 },
+        Joined { room: RoomIdV010 },
+        JoinRefused { room: RoomIdV010 },
+        Left { room: RoomIdV010 },
+    }
+
+    fn every_room_frame(room: &RoomId) -> Vec<Vec<u8>> {
+        let client = [
+            ClientFrame::Join { room: room.clone() },
+            ClientFrame::Leave { room: room.clone() },
+        ]
+        .map(|frame| serde_json::to_vec(&frame).unwrap());
+        let server = [
+            ServerFrame::Joined { room: room.clone() },
+            ServerFrame::JoinRefused { room: room.clone() },
+            ServerFrame::Left { room: room.clone() },
+        ]
+        .map(|frame| serde_json::to_vec(&frame).unwrap());
+        client.into_iter().chain(server).collect()
+    }
+
+    #[test]
+    fn a_v010_peer_still_reads_every_scope_it_knows() {
+        use sealmesh_chat_wire::Scope;
+        for scope in [
+            Scope::Ticket(sealmesh_wire::TicketId::new("ENG", 7).unwrap()),
+            Scope::Repo(RepoSlug::try_from("example-org/example-repo").unwrap()),
+            Scope::Project,
+        ] {
+            let room = RoomId::new(ProjectId::try_from("example-repo").unwrap(), scope);
+            for json in every_room_frame(&room) {
+                assert!(
+                    decode::<RoomFrameV010>(&json).is_ok(),
+                    "{}",
+                    String::from_utf8_lossy(&json)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_named_room_is_undecodable_to_a_v010_peer_like_any_new_variant() {
+        // The same treatment `Machine`, `PostRefused` and the rest get: the
+        // old decoder fails on the frame, so the peer counts it undecodable
+        // and keeps its socket. It must not decode as some other room.
+        let named = RoomId::named(sealmesh_chat_wire::RoomName::try_from("ops").unwrap());
+        for json in every_room_frame(&named) {
+            assert!(
+                decode::<RoomFrameV010>(&json).is_err(),
+                "{}",
+                String::from_utf8_lossy(&json)
+            );
+            // And the current build reads it back exactly.
+            let text = String::from_utf8(json).unwrap();
+            assert!(text.contains(r#""scope":{"named":"ops"}"#), "{text}");
+            assert!(text.contains(r#""project":"named""#), "{text}");
+        }
+        let joined = serde_json::to_vec(&ServerFrame::Joined {
+            room: named.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            decode::<ServerFrame>(&joined).unwrap(),
+            ServerFrame::Joined { room: named }
+        );
+    }
+
+    #[test]
+    fn a_named_room_with_a_bad_name_does_not_decode() {
+        for hostile in [
+            br#"{"type":"join","room":{"project":"named","scope":{"named":"Ops"}}}"#.as_slice(),
+            br#"{"type":"join","room":{"project":"named","scope":{"named":""}}}"#,
+            br#"{"type":"join","room":{"project":"named","scope":{"named":"-ops"}}}"#,
+            br#"{"type":"join","room":{"project":"named","scope":{"named":"o/ps"}}}"#,
+        ] {
+            assert!(
+                decode::<ClientFrame>(hostile).is_err(),
+                "{}",
+                String::from_utf8_lossy(hostile)
+            );
+        }
+    }
+
     #[test]
     fn a_parse_error_carries_only_a_position() {
         let err = decode::<ServerFrame>(br#"{"type":"welcome","host":12345}"#).unwrap_err();

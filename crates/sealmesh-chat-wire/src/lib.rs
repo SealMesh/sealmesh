@@ -230,6 +230,67 @@ pub enum Scope {
     Repo(RepoSlug),
     /// The room for an entire project, spanning its repos.
     Project,
+    /// A room named in the daemon's own config (`[[room]] name = "ops"`),
+    /// joinable only by the members listed there. Only std and otw meshes
+    /// create one; a cloud router refuses it, and a peer built before this
+    /// variant reads the frame carrying it as undecodable and keeps the
+    /// socket, the same as every other additive variant. A named room's
+    /// project is always [`ProjectId::named_rooms`], so a name is one room no
+    /// matter which peer spells it: build one with [`RoomId::named`].
+    Named(RoomName),
+}
+
+/// The longest a [`RoomName`] may be, in characters.
+pub const MAX_ROOM_NAME_CHARS: usize = 48;
+
+/// The name of a [`Scope::Named`] room: 1-[`MAX_ROOM_NAME_CHARS`] characters
+/// of `[a-z0-9-]`, starting with a letter or digit (so it can never read as a
+/// command-line flag). Validated in the constructor, which `Deserialize`
+/// routes through, so a frame off the wire cannot carry anything else.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RoomName(String);
+
+impl RoomName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RoomName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<&str> for RoomName {
+    type Error = ChatWireError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let ok = (1..=MAX_ROOM_NAME_CHARS).contains(&value.len())
+            && value.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && value
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if ok {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(ChatWireError::RoomName)
+        }
+    }
+}
+
+impl TryFrom<String> for RoomName {
+    type Error = ChatWireError;
+    fn try_from(v: String) -> Result<Self, Self::Error> {
+        Self::try_from(v.as_str())
+    }
+}
+
+impl From<RoomName> for String {
+    fn from(v: RoomName) -> Self {
+        v.0
+    }
 }
 
 /// A chat room: a project, narrowed by a [`Scope`].
@@ -249,12 +310,31 @@ impl RoomId {
     pub fn new(project: ProjectId, scope: Scope) -> Self {
         Self { project, scope }
     }
+
+    /// The one spelling of the named room `name`:
+    /// [`ProjectId::named_rooms`] with [`Scope::Named`].
+    pub fn named(name: RoomName) -> Self {
+        Self {
+            project: ProjectId::named_rooms(),
+            scope: Scope::Named(name),
+        }
+    }
+
+    /// Whether this is a named room spelled the one way [`RoomId::named`]
+    /// spells it. A `Named` scope under any other project is not.
+    pub fn is_canonical_named(&self) -> bool {
+        matches!(self.scope, Scope::Named(_)) && self.project == ProjectId::named_rooms()
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ChatWireError {
     #[error("message body must be 1-{MAX_BODY_CHARS} characters, got {chars}")]
     Body { chars: usize },
+    #[error(
+        "room name must be 1-{MAX_ROOM_NAME_CHARS} chars of [a-z0-9-], starting with a letter or digit"
+    )]
+    RoomName,
 }
 
 #[cfg(test)]
@@ -479,10 +559,60 @@ mod tests {
                 RepoSlug::try_from("example-org/example-repo").unwrap(),
             )),
             full_room(Scope::Project),
+            RoomId::named(RoomName::try_from("ops").unwrap()),
         ] {
             let json = serde_json::to_string(&room).unwrap();
             assert_eq!(serde_json::from_str::<RoomId>(&json).unwrap(), room);
         }
+    }
+
+    #[test]
+    fn a_room_name_is_1_to_48_chars_of_lowercase_digits_and_dashes() {
+        let longest = "a".repeat(MAX_ROOM_NAME_CHARS);
+        for ok in ["ops", "a", "7", "release-2026", longest.as_str()] {
+            assert_eq!(RoomName::try_from(ok).unwrap().as_str(), ok);
+        }
+        let too_long = "a".repeat(MAX_ROOM_NAME_CHARS + 1);
+        for hostile in [
+            "",
+            "Ops",
+            "-ops",
+            "o ps",
+            "o_ps",
+            "o.ps",
+            "o/ps",
+            "caf\u{e9}",
+            "ops\u{202e}",
+            too_long.as_str(),
+        ] {
+            assert_eq!(
+                RoomName::try_from(hostile),
+                Err(ChatWireError::RoomName),
+                "accepted {hostile:?}"
+            );
+            let json = format!(r#"{{"named":{}}}"#, serde_json::to_string(hostile).unwrap());
+            assert!(
+                serde_json::from_str::<Scope>(&json).is_err(),
+                "decoded {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_named_room_has_one_spelling() {
+        let room = RoomId::named(RoomName::try_from("ops").unwrap());
+        assert_eq!(room.project, ProjectId::named_rooms());
+        assert!(room.is_canonical_named());
+        assert_eq!(
+            serde_json::to_string(&room).unwrap(),
+            r#"{"project":"named","scope":{"named":"ops"}}"#
+        );
+        let elsewhere = RoomId::new(
+            ProjectId::try_from("example-repo").unwrap(),
+            Scope::Named(RoomName::try_from("ops").unwrap()),
+        );
+        assert!(!elsewhere.is_canonical_named());
+        assert!(!full_room(Scope::Project).is_canonical_named());
     }
 
     #[test]

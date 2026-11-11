@@ -5,14 +5,17 @@ use anyhow::Result;
 use crate::{
     collect::{self, Decision, Outcome, git::GitResolver, roots},
     config::Config,
-    github_auth, paths, render,
+    config::Mode,
+    credential::CredentialSource,
+    paths, render,
 };
 
 pub async fn run(config: &Config) -> Result<()> {
-    println!("router            {}", config.server.connect_url()?);
+    println!("mode              {}", mode_line(config));
+    println!("router            {}", router_line(config)?);
     println!("integration       origin/{}", config.integration_branch);
     println!("ticket rooms      {}", ticket_rooms_line(config));
-    println!("host              derived from your GitHub login at connect");
+    println!("host              {}", host_line(config.mode()));
     println!("machine           {}", machine_line(config));
 
     let killed = crate::daemon::is_off();
@@ -121,13 +124,49 @@ pub async fn run(config: &Config) -> Result<()> {
         println!("\n{warning}");
     }
 
-    println!("\ngithub credential");
-    match github_auth::token() {
+    let source = config.credential_source()?;
+    println!("\n{}", credential_heading(&source));
+    match source.token() {
         Ok(_) => println!("  resolved. Run `sealmesh daemon` to connect."),
         Err(error) => println!("  NOT resolved: {error:#}"),
     }
 
     Ok(())
+}
+
+/// The `doctor` mode line: the mode, and whether it was chosen or defaulted.
+fn mode_line(config: &Config) -> String {
+    let mode = config.mode();
+    let what = match mode {
+        Mode::Std => "router inside this daemon, identity = your OS user",
+        Mode::Otw => "router on your tailnet, identity = Tailscale",
+        Mode::Cloud => "remote router, identity = your GitHub login",
+    };
+    format!("{mode} ({what})")
+}
+
+fn router_line(config: &Config) -> Result<String> {
+    if config.mode().has_remote_router() {
+        config.server()?.connect_url()
+    } else {
+        Ok("embedded (std mode runs the router inside `sealmesh daemon`)".to_owned())
+    }
+}
+
+fn host_line(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Std => "derived from your OS user name",
+        Mode::Otw => "derived from your Tailscale identity at connect",
+        Mode::Cloud => "derived from your GitHub login at connect",
+    }
+}
+
+fn credential_heading(source: &CredentialSource) -> &'static str {
+    match source {
+        CredentialSource::GhCli => "github credential",
+        CredentialSource::LocalSecret(_) => "local router secret",
+        CredentialSource::None => "credential (none: the tailnet identifies this machine)",
+    }
 }
 
 /// The `doctor` chat line, as a pure function of the same decision
@@ -362,6 +401,33 @@ mod tests {
         "#
         );
         toml::from_str(&toml).unwrap()
+    }
+
+    #[test]
+    fn the_doctor_prints_the_mode_and_a_router_line_that_fits_it() {
+        let cloud = config_with_chat(false);
+        assert!(
+            mode_line(&cloud).starts_with("cloud ("),
+            "{}",
+            mode_line(&cloud)
+        );
+        assert_eq!(
+            router_line(&cloud).unwrap(),
+            "wss://router.example.com/v1/connect"
+        );
+        assert_eq!(
+            credential_heading(&cloud.credential_source().unwrap()),
+            "github credential"
+        );
+
+        let std: Config = toml::from_str("[mesh]\nmode = \"std\"").unwrap();
+        assert!(mode_line(&std).starts_with("std ("), "{}", mode_line(&std));
+        assert!(router_line(&std).unwrap().starts_with("embedded"));
+        assert_eq!(host_line(Mode::Std), "derived from your OS user name");
+        assert_eq!(
+            credential_heading(&std.credential_source().unwrap()),
+            "local router secret"
+        );
     }
 
     #[test]

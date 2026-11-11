@@ -80,11 +80,16 @@ pub enum RoomScope {
 }
 
 impl RoomScope {
-    pub fn of(room: &RoomId) -> Self {
+    /// The scope word of one of a checkout's rooms. `None` for a named room,
+    /// which no checkout resolves to: named rooms come from the daemon's
+    /// `[[room]]` config (std and otw mode), and the MCP tools reach them
+    /// through their own path once the std PR adds it.
+    pub fn of(room: &RoomId) -> Option<Self> {
         match room.scope {
-            Scope::Ticket(_) => Self::Ticket,
-            Scope::Repo(_) => Self::Repo,
-            Scope::Project => Self::Project,
+            Scope::Ticket(_) => Some(Self::Ticket),
+            Scope::Repo(_) => Some(Self::Repo),
+            Scope::Project => Some(Self::Project),
+            Scope::Named(_) => None,
         }
     }
 }
@@ -278,7 +283,9 @@ impl Context {
             Response::Resolved { rooms } => Ok(rooms
                 .into_iter()
                 .map(|resolved| resolved.room)
-                .filter(|room| self.project_rooms || RoomScope::of(room) != RoomScope::Project)
+                .filter(|room| {
+                    self.project_rooms || RoomScope::of(room) != Some(RoomScope::Project)
+                })
                 .collect()),
             other => Err(refusal(other)),
         }
@@ -289,7 +296,7 @@ impl Context {
         self.resolve(checkout)
             .await?
             .into_iter()
-            .find(|room| RoomScope::of(room) == scope)
+            .find(|room| RoomScope::of(room) == Some(scope))
             .ok_or(RoomFailure::NoRoom)
     }
 }
@@ -553,9 +560,11 @@ mod tests {
                 "{hostile}"
             );
         }
-        assert_eq!(RoomScope::of(&ticket_room()), RoomScope::Ticket);
-        assert_eq!(RoomScope::of(&repo_room()), RoomScope::Repo);
-        assert_eq!(RoomScope::of(&project_room()), RoomScope::Project);
+        assert_eq!(RoomScope::of(&ticket_room()), Some(RoomScope::Ticket));
+        assert_eq!(RoomScope::of(&repo_room()), Some(RoomScope::Repo));
+        assert_eq!(RoomScope::of(&project_room()), Some(RoomScope::Project));
+        let named = RoomId::named(sealmesh_chat_wire::RoomName::try_from("ops").unwrap());
+        assert_eq!(RoomScope::of(&named), None);
     }
 
     #[test]

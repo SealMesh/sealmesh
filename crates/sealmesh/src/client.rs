@@ -11,7 +11,7 @@ use tokio_tungstenite::{
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 
-use crate::{config::ServerConfig, github_auth};
+use crate::{config::Config, credential::CredentialSource};
 
 pub type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -26,14 +26,24 @@ pub struct Connected {
     pub host: HostId,
 }
 
-pub async fn connect(config: &ServerConfig, role: Role) -> Result<Connected> {
-    let url = config.connect_url()?;
-    let token = github_auth::token()?;
+/// Connects to the router this config's mode names, with that mode's
+/// credential. In std mode there is no remote router to reach; the embedded
+/// router's Unix-socket path lands with the std PR, and until then this says
+/// so rather than guessing a URL.
+pub async fn connect(config: &Config, role: Role) -> Result<Connected> {
+    let url = config.server()?.connect_url()?;
+    let source = config.credential_source()?;
+    connect_to(&url, &source, role).await
+}
+
+/// [`connect`] against an explicit WebSocket URL and credential source.
+pub async fn connect_to(url: &str, source: &CredentialSource, role: Role) -> Result<Connected> {
+    let token = source.token()?;
 
     let limits = WebSocketConfig::default()
         .max_message_size(Some(MAX_FRAME_BYTES))
         .max_frame_size(Some(MAX_FRAME_BYTES));
-    let (mut socket, _response) = connect_async_with_config(&url, Some(limits), false)
+    let (mut socket, _response) = connect_async_with_config(url, Some(limits), false)
         .await
         .with_context(|| format!("connecting to {url}"))?;
 
@@ -41,10 +51,7 @@ pub async fn connect(config: &ServerConfig, role: Role) -> Result<Connected> {
 
     match recv_frame(&mut socket).await? {
         ServerFrame::Welcome { host } => Ok(Connected { socket, host }),
-        ServerFrame::Denied {} => bail!(
-            "the router refused this login. Check `gh auth status`, and that you are an \
-             active member of the GitHub organisation this router serves"
-        ),
+        ServerFrame::Denied {} => bail!("{}", source.refusal_hint()),
         _ => bail!("router answered the handshake with something else"),
     }
 }
@@ -242,6 +249,20 @@ mod tests {
                 String::from_utf8_lossy(hostile)
             );
         }
+    }
+
+    #[test]
+    fn a_room_scope_from_a_newer_peer_is_skipped_and_a_named_room_is_read() {
+        // A scope this build does not know lands where every other new
+        // variant does: undecodable, socket kept.
+        let newer = br#"{"type":"joined","room":{"project":"named","scope":{"channel":"ops"}}}"#;
+        assert!(matches!(classify(newer), Incoming::Undecodable));
+        // `Named` is known here, and reads back as the room it names.
+        let named = br#"{"type":"joined","room":{"project":"named","scope":{"named":"ops"}}}"#;
+        let Incoming::Frame(ServerFrame::Joined { room }) = classify(named) else {
+            panic!("a named room did not decode");
+        };
+        assert!(room.is_canonical_named());
     }
 
     fn room_json() -> &'static str {
