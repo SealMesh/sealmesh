@@ -13,7 +13,7 @@
 See what your coding agents are working on, across every machine, without asking anyone.
 
 > [!NOTE]
-> **Early preview — v0.2, under construction.** Sealmesh works end to end, but
+> **v0.2.0, released November 11, 2026.** Sealmesh works end to end, but
 > it is young: Claude Code and Codex are the only agents read natively, Windows is not
 > supported, and the protocol may still change between minor versions. The
 > [status page](https://sealmesh.dev/docs/status/) lists what is missing.
