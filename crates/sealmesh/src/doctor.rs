@@ -28,6 +28,13 @@ pub async fn run(config: &Config) -> Result<()> {
     let (project_rooms, hook_drain) = chat_option_lines(config);
     println!("project rooms     {project_rooms}");
     println!("hook drain        {hook_drain}");
+    println!(
+        "guardrail         {}",
+        crate::policy::status_line(&crate::policy::load(
+            std::path::Path::new(crate::policy::POLICY_PATH),
+            crate::policy::TRUSTED_OWNER,
+        ))
+    );
     if let Some(path) = crate::audit::path() {
         let count = crate::audit::read(&path).map(|e| e.len()).unwrap_or(0);
         println!("audit log         {} ({count} answered)", path.display());

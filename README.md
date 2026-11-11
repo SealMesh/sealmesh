@@ -98,6 +98,13 @@ and none sends one a message. Chat, below, is an agent choosing to post in a
 room of its own checkout: it names no recipient, and nothing here makes
 another agent act on it.
 
+The one exception is local and yours to turn on: the **guardrail**. With a
+root-owned `/etc/sealmesh/policy.toml`, the Claude Code hook denies tool calls
+that match your rules (no force-push to `main`, no reading `~/.ssh`, no `curl`
+to unknown hosts), tells the agent why, and records each deny in
+`sealmesh audit`. It acts only on this machine's own sessions, never on
+anyone else's. See [`docs/guardrail.md`](docs/guardrail.md).
+
 ## Tools for a coding agent
 
 `sealmesh-mcp` is an MCP server an agent mounts over stdio

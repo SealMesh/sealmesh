@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::{
     config::Config,
-    declare, gitref,
+    declare, gitref, policy,
     room::{
         connect,
         local::{ConsumerKey, Delivered, JoinOutcome, Request, Response},
@@ -46,16 +46,36 @@ pub enum Action {
 }
 
 pub async fn run() -> Result<()> {
-    let mut payload = String::new();
+    let mut raw = Vec::new();
     {
         use std::io::Read as _;
         if std::io::stdin()
-            .take(MAX_PAYLOAD_BYTES)
-            .read_to_string(&mut payload)
+            .take(MAX_PAYLOAD_BYTES.saturating_add(1))
+            .read_to_end(&mut raw)
             .is_err()
         {
             return Ok(());
         }
+    }
+
+    // The guardrail answers first, for every `PreToolUse`, and a deny is
+    // the whole of this run's output. Everything after it is unchanged.
+    let policy_path = Path::new(policy::POLICY_PATH);
+    let ledger = Ledger::default_paths();
+    if u64::try_from(raw.len()).unwrap_or(u64::MAX) > MAX_PAYLOAD_BYTES {
+        let verdict = policy::check_oversized(&raw, policy_path, policy::TRUSTED_OWNER);
+        if let Some(output) = answer(verdict, &ledger) {
+            println!("{output}");
+        }
+        return Ok(());
+    }
+    let Ok(payload) = String::from_utf8(raw) else {
+        return Ok(());
+    };
+    let verdict = policy::check(&payload, policy_path, policy::TRUSTED_OWNER);
+    if let Some(output) = answer(verdict, &ledger) {
+        println!("{output}");
+        return Ok(());
     }
 
     match action(&payload) {
@@ -114,7 +134,75 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-const MAX_PAYLOAD_BYTES: u64 = 256 * 1024;
+/// The most of a payload this hook reads. With matcher `*` it sees every
+/// tool call, and a `Write` carries the whole file it writes, so this is
+/// sized for that. A payload over it cannot be parsed; the guardrail then
+/// denies it while a policy is in force (see `policy::check_oversized`), so
+/// padding a call is not a way past a rule (rule 44: bounded bytes).
+const MAX_PAYLOAD_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Where the guardrail writes: the audit log, and the marker that keeps an
+/// unchanged "policy ignored" warning to one audit line an hour. Either may
+/// be absent (no home directory), and then that write is skipped.
+struct Ledger {
+    audit: Option<PathBuf>,
+    marker: Option<PathBuf>,
+}
+
+impl Ledger {
+    fn default_paths() -> Self {
+        Self {
+            audit: crate::audit::path(),
+            marker: policy::ignored_marker_path(),
+        }
+    }
+}
+
+/// Acts on a guardrail verdict: the deny JSON to print, if any, with the
+/// audit line written first; or, for an ignored policy, a warning on stderr
+/// and (at most once an hour per reason) an audit line. Audit failures are
+/// silent: a full disk must not change what the hook answers.
+fn answer(verdict: policy::Verdict, ledger: &Ledger) -> Option<String> {
+    let now = jiff::Timestamp::now();
+    match verdict {
+        policy::Verdict::Allow => None,
+        policy::Verdict::AllowIgnored(reason) => {
+            eprintln!(
+                "sealmesh: the guardrail policy is being ignored, so this tool call is \
+                 allowed: {reason}. Run `sealmesh doctor`."
+            );
+            let due = ledger
+                .marker
+                .as_deref()
+                .is_none_or(|marker| policy::ignored_due(marker, &reason, now));
+            if due && let Some(audit) = &ledger.audit {
+                let record = crate::audit::GuardrailRecord::PolicyIgnored { at: now, reason };
+                crate::audit::record_guardrail(audit, &record).ok();
+            }
+            None
+        }
+        policy::Verdict::Deny {
+            tool,
+            session,
+            deny,
+        } => {
+            if let Some(audit) = &ledger.audit {
+                let record = crate::audit::GuardrailRecord::Denied {
+                    at: now,
+                    session: session.as_deref().and_then(short_id),
+                    tool: tool
+                        .chars()
+                        .take(crate::audit::MAX_GUARDRAIL_TOOL_CHARS)
+                        .collect(),
+                    rule: deny.rule.label(),
+                    reason: deny.reason.clone(),
+                };
+                crate::audit::record_guardrail(audit, &record).ok();
+            }
+            Some(policy::deny_output(&deny.reason))
+        }
+    }
+}
 
 /// The one deadline covering a whole drain attempt: resolving the checkout's
 /// rooms, holding each one, and draining it. A `UserPromptSubmit` hook runs
@@ -665,6 +753,162 @@ mod tests {
     #[test]
     fn the_payload_cap_is_far_above_a_real_one() {
         const { assert!(MAX_PAYLOAD_BYTES >= 32 * 1024) };
+    }
+
+    // --- the guardrail ------------------------------------------------
+
+    struct GuardTemp(PathBuf);
+
+    impl GuardTemp {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("sealmesh-hook-guard-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn ledger(&self) -> Ledger {
+            Ledger {
+                audit: Some(self.0.join("state/audit.jsonl")),
+                marker: Some(self.0.join("state/warned.json")),
+            }
+        }
+
+        fn policy(&self, text: &str, mode: u32) -> (PathBuf, u32) {
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+            let path = self.0.join("policy.toml");
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let uid = std::fs::metadata(&path).unwrap().uid();
+            (path, uid)
+        }
+
+        fn guardrail_records(&self) -> Vec<crate::audit::GuardrailRecord> {
+            crate::audit::read_all(&self.0.join("state/audit.jsonl"))
+                .unwrap()
+                .into_iter()
+                .filter_map(|r| match r {
+                    crate::audit::Record::Guardrail(g) => Some(g),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    impl Drop for GuardTemp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const DENY_ALL: &str = "[[deny]]\ntool = \"*\"\nreason = \"Nothing runs here.\"\n";
+
+    #[test]
+    fn ask_user_question_still_needs_input_and_is_never_denied() {
+        let t = GuardTemp::new("ask");
+        let (path, uid) = t.policy(DENY_ALL, 0o644);
+        let ask = payload(
+            "PreToolUse",
+            serde_json::json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": []}}),
+        );
+        assert_eq!(policy::check(&ask, &path, uid), policy::Verdict::Allow);
+        assert_eq!(answer(policy::check(&ask, &path, uid), &t.ledger()), None);
+        assert_eq!(action(&ask), declared("needs_input", None));
+        assert!(t.guardrail_records().is_empty());
+
+        // The same policy does deny every other tool.
+        let read = payload(
+            "PreToolUse",
+            serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}}),
+        );
+        assert!(matches!(
+            policy::check(&read, &path, uid),
+            policy::Verdict::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn a_deny_prints_the_decision_and_lands_in_the_audit_log() {
+        let t = GuardTemp::new("deny");
+        let (path, uid) = t.policy(
+            "[[deny]]\ntool = \"Bash\"\ncommand = 'git\\s+push\\b.*--force'\nreason = \"No force-push.\"\n",
+            0o644,
+        );
+        let push = payload(
+            "PreToolUse",
+            serde_json::json!({"tool_name": "Bash", "tool_input": {"command": format!("git push --force # {CANARY}")}}),
+        );
+        let output = answer(policy::check(&push, &path, uid), &t.ledger()).unwrap();
+        let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(
+            output["hookSpecificOutput"]["permissionDecision"],
+            serde_json::json!("deny")
+        );
+        assert_eq!(
+            output["hookSpecificOutput"]["permissionDecisionReason"],
+            serde_json::json!("No force-push.")
+        );
+
+        let records = t.guardrail_records();
+        assert_eq!(records.len(), 1);
+        let crate::audit::GuardrailRecord::Denied {
+            session,
+            tool,
+            rule,
+            reason,
+            ..
+        } = records.first().unwrap()
+        else {
+            panic!("{records:?}");
+        };
+        assert_eq!(session.as_deref(), Some("a04e3d0f"));
+        assert_eq!(tool, "Bash");
+        assert_eq!(rule, "deny #1");
+        assert_eq!(reason, "No force-push.");
+        // The command the agent sent is not in the ledger.
+        let ledger = std::fs::read_to_string(t.0.join("state/audit.jsonl")).unwrap();
+        assert!(!ledger.contains(CANARY), "{ledger}");
+
+        // No match: no output, no audit line.
+        let ls = payload(
+            "PreToolUse",
+            serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+        );
+        assert_eq!(answer(policy::check(&ls, &path, uid), &t.ledger()), None);
+        assert_eq!(t.guardrail_records().len(), 1);
+    }
+
+    #[test]
+    fn an_ignored_policy_allows_warns_and_is_audited_once_not_per_call() {
+        let t = GuardTemp::new("ignored");
+        let (path, uid) = t.policy(DENY_ALL, 0o664);
+        let read = payload(
+            "PreToolUse",
+            serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}}),
+        );
+        for _ in 0..3 {
+            assert_eq!(answer(policy::check(&read, &path, uid), &t.ledger()), None);
+        }
+        let records = t.guardrail_records();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(matches!(
+            records.first(),
+            Some(crate::audit::GuardrailRecord::PolicyIgnored { reason, .. })
+                if reason.contains("writable by group or others")
+        ));
+    }
+
+    #[test]
+    fn with_no_policy_file_the_hook_is_silent_and_records_nothing() {
+        let t = GuardTemp::new("none");
+        let read = payload(
+            "PreToolUse",
+            serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}),
+        );
+        let verdict = policy::check(&read, &t.0.join("policy.toml"), 0);
+        assert_eq!(answer(verdict, &t.ledger()), None);
+        assert!(!t.0.join("state").exists());
     }
 
     // --- the drain path -----------------------------------------------

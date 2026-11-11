@@ -21,6 +21,18 @@ a fix to a released version always ships as a new version.
   `codex` is now skipped in favor of the native reader; `sealmesh doctor` says
   so. See "Native providers" in [providers.md](providers.md). No wire change:
   `tool` is already a validated string.
+- **Local guardrail.** A root-owned `/etc/sealmesh/policy.toml` of `[[deny]]`
+  rules (a regex over a Bash command, or a glob over a file tool's path, plus
+  the reason the agent is told). The Claude Code hook checks every tool call
+  against it and denies a match; every deny is in `sealmesh audit`, and
+  `sealmesh doctor` has a `guardrail` line. A built-in rule stops an agent
+  editing the policy itself. A policy that is not owned by root, is
+  group/other-writable, or does not parse is ignored with a warning (fail
+  open). See [guardrail.md](guardrail.md).
+- **`install-claude-hook` subscribes `PreToolUse` with matcher `*`** and a
+  5-second timeout, so the guardrail sees every call. Re-run it after
+  upgrading: it replaces the old `PreToolUse(AskUserQuestion)` entry instead
+  of adding a second one, and now keeps the settings file's permissions.
 - **Events are off by default and deprecated.** Nothing on the router consumes
   them. `[events] enabled = true` still emits exactly as before and warns once
   at daemon start; the wire frames are unchanged, so older routers and daemons

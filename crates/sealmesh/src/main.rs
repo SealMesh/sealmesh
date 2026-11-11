@@ -182,6 +182,7 @@ fn show_audit() -> Result<()> {
                 println!("{}  {} (claimed)  {answered}", entry.at, entry.asked_by);
             }
             audit::Record::Room(room) => println!("{}", describe_room(&room)),
+            audit::Record::Guardrail(guardrail) => println!("{}", guardrail.describe()),
         }
     }
     Ok(())
