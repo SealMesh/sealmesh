@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use sealmesh::{
-    audit, chat,
+    audit, banner, chat,
     config::Config,
     daemon, declare, doctor, hook, install_hook,
     room::{room_name, word},
@@ -32,8 +32,9 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
+    /// Optional: bare `sealmesh` prints the welcome screen and exits 0.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -109,7 +110,10 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command {
+    let Some(command) = cli.command else {
+        return banner::run(cli.config.as_deref());
+    };
+    match command {
         Command::Who => {
             let config = Config::load(cli.config.as_deref())?;
             who::run(&config).await
@@ -243,5 +247,67 @@ fn describe_room(record: &audit::RoomRecord) -> String {
                 room_name(room)
             ),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use clap::{CommandFactory as _, error::ErrorKind};
+
+    use super::*;
+
+    /// Text only the welcome screen prints.
+    fn has_welcome(text: &str) -> bool {
+        text.contains("see every agent, live") || text.contains('●')
+    }
+
+    #[test]
+    fn the_cli_definition_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn bare_sealmesh_parses_to_no_command() {
+        let cli = Cli::try_parse_from(["sealmesh"]).unwrap();
+        assert!(cli.command.is_none());
+        let cli = Cli::try_parse_from(["sealmesh", "--config", "x.toml"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.config, Some(PathBuf::from("x.toml")));
+    }
+
+    #[test]
+    fn help_and_version_do_not_print_the_welcome_screen() {
+        let help = Cli::try_parse_from(["sealmesh", "--help"])
+            .err()
+            .expect("--help exits through clap");
+        assert_eq!(help.kind(), ErrorKind::DisplayHelp);
+        let help = help.render().to_string();
+        assert!(help.contains(BANNER), "the --help header is unchanged");
+        assert!(!has_welcome(&help), "{help}");
+
+        let version = Cli::try_parse_from(["sealmesh", "--version"])
+            .err()
+            .expect("--version exits through clap");
+        assert_eq!(version.kind(), ErrorKind::DisplayVersion);
+        let version = version.render().to_string();
+        assert_eq!(version, format!("sealmesh {}\n", env!("CARGO_PKG_VERSION")));
+
+        let sub_help = Cli::try_parse_from(["sealmesh", "who", "--help"])
+            .err()
+            .expect("who --help exits through clap");
+        assert!(!has_welcome(&sub_help.render().to_string()));
+    }
+
+    #[test]
+    fn a_subcommand_still_runs_as_itself() {
+        let cli = Cli::try_parse_from(["sealmesh", "who"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Who)));
+        let cli = Cli::try_parse_from(["sealmesh", "doctor"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Doctor)));
+        let cli = Cli::try_parse_from(["sealmesh", "hook"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::ClaudeHook)));
+        assert!(Cli::try_parse_from(["sealmesh", "nope"]).is_err());
     }
 }

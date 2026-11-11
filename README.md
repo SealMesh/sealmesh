@@ -85,6 +85,38 @@ different from the other side.
 
 ## Commands
 
+Run `sealmesh` with no command for the welcome screen: the version, this
+machine's mode, whether its daemon is answering, and whether the guardrail is
+on. It reads only local state, so it draws instantly with or without a router.
+
+```
+$ sealmesh
+                    ●───●
+                     ╲ ╱
+                      ●
+                ▄███▄
+               ▄███▀██
+               ████▀
+             ▄█████         ▄▀▀▀ █▀▀▀ ▄▀▀▄ █    █▄ ▄█ █▀▀▀ ▄▀▀▀ █  █
+           ▄███████         █    █    █  █ █    █ ▀ █ █    █    █  █
+       ▄▄█████████▀          ▀▀▄ █▀▀  █▀▀█ █    █   █ █▀▀   ▀▀▄ █▀▀█
+▄▄▄▄▄█████████████             █ █    █  █ █    █   █ █       █ █  █
+ █████████████████▄▄        ▄▄▄▀ █▄▄▄ █  █ █▄▄▄ █   █ █▄▄▄ ▄▄▄▀ █  █
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+Sealmesh v0.2.0 · see every agent, live
+
+mode       std (router on this machine)
+daemon     running
+guardrail  off (no policy file)
+
+sealmesh who · sealmesh doctor · sealmesh --help
+```
+
+Under 72 columns the wordmark moves under the seal, and narrower still the art
+drops away. Piped or with `TERM=dumb` it prints the five text lines alone;
+`NO_COLOR` keeps the art and drops the bold and dim.
+
 | | |
 |---|---|
 | `sealmesh who` | Every agent on every connected machine that is in a repo your GitHub login can read, answered live — and a note when some were left out |

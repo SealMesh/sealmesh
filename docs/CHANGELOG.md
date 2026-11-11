@@ -3,6 +3,17 @@
 All notable changes to Sealmesh. Versions follow [Semantic Versioning](https://semver.org);
 a fix to a released version always ships as a new version.
 
+## Unreleased
+
+- **A welcome screen for bare `sealmesh`.** Run with no command, `sealmesh`
+  draws the seal balancing its mesh beside a SEALMESH wordmark, then the
+  version, this machine's mode (or that there is no config yet), whether the
+  daemon answers on its local socket, and the guardrail's state, all read
+  locally with no network call. It stacks under 72 columns, falls back to plain
+  text when piped, narrow or `TERM=dumb`, and honors `NO_COLOR`. `--help`,
+  `--version` and every subcommand are unchanged, except that the usage line
+  now reads `[COMMAND]`: a bare run used to be a usage error and now exits 0.
+
 ## 0.2.0 — 2026-11-11
 
 - **New home: `allocmemory`.** The repository, the Homebrew tap and the site

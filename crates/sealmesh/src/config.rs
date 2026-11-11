@@ -373,9 +373,8 @@ impl Config {
     }
 
     fn discover() -> Result<PathBuf> {
-        let user = config_home()
-            .ok_or_else(|| anyhow!("no home directory to resolve the config path against"))?
-            .join(USER_CONFIG);
+        let user = Self::user_path()
+            .ok_or_else(|| anyhow!("no home directory to resolve the config path against"))?;
         if user.is_file() {
             return Ok(user);
         }
@@ -583,6 +582,12 @@ impl Config {
             sysinfo::System::host_name()
                 .and_then(|hostname| sealmesh_proto::MachineName::from_hostname(&hostname))
         })
+    }
+
+    /// Where [`Self::load`] looks when no `--config` is given:
+    /// `$XDG_CONFIG_HOME/sealmesh/config.toml`.
+    pub fn user_path() -> Option<PathBuf> {
+        config_home().map(|d| d.join(USER_CONFIG))
     }
 
     pub fn off_switch_path() -> Option<PathBuf> {

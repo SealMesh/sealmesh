@@ -1,5 +1,6 @@
 pub mod agent_link;
 pub mod audit;
+pub mod banner;
 pub mod chat;
 pub mod client;
 pub mod collect;
