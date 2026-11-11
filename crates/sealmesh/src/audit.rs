@@ -69,11 +69,77 @@ pub enum RoomRecord {
     },
 }
 
+/// A guardrail event in the ledger: a tool call the local policy denied, or
+/// a policy file that was there and ignored. Never the command or the file
+/// contents an agent sent: the tool's name, which rule, and the policy's own
+/// reason text are enough to find the session and the rule.
+///
+/// Tagged by `guardrail_event`, which neither other shape carries, so a build
+/// that does not know it skips these lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "guardrail_event",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum GuardrailRecord {
+    /// The policy denied a tool call.
+    Denied {
+        at: Timestamp,
+        /// The session's short id, when the payload carried one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        tool: String,
+        /// `built-in`, `deny #N`, or `oversized`.
+        rule: String,
+        reason: String,
+    },
+    /// A policy file was present and ignored, so tool calls were allowed.
+    PolicyIgnored { at: Timestamp, reason: String },
+}
+
+/// The longest tool name a guardrail record keeps (rule 44: bounded bytes).
+pub const MAX_GUARDRAIL_TOOL_CHARS: usize = 128;
+
+impl GuardrailRecord {
+    /// One `sealmesh audit` line. Every string is sanitised: the ledger is a
+    /// user-writable file, and a terminal escape in it must not steer the
+    /// reader's terminal.
+    pub fn describe(&self) -> String {
+        use crate::render::sanitize;
+        match self {
+            Self::Denied {
+                at,
+                session,
+                tool,
+                rule,
+                reason,
+            } => {
+                let session = session
+                    .as_deref()
+                    .map(|s| format!(" session {}", sanitize(s, 16)))
+                    .unwrap_or_default();
+                format!(
+                    "{at}  guardrail  denied {} ({}){session}: {}",
+                    sanitize(tool, MAX_GUARDRAIL_TOOL_CHARS),
+                    sanitize(rule, 32),
+                    sanitize(reason, 512)
+                )
+            }
+            Self::PolicyIgnored { at, reason } => format!(
+                "{at}  guardrail  WARNING: policy ignored, tool calls allowed: {}",
+                sanitize(reason, 512)
+            ),
+        }
+    }
+}
+
 /// One line of the ledger, whichever kind it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
     Query(Entry),
     Room(RoomRecord),
+    Guardrail(GuardrailRecord),
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -85,6 +151,10 @@ pub fn record(path: &Path, entry: &Entry) -> Result<()> {
 }
 
 pub fn record_room(path: &Path, entry: &RoomRecord) -> Result<()> {
+    append(path, entry)
+}
+
+pub fn record_guardrail(path: &Path, entry: &GuardrailRecord) -> Result<()> {
     append(path, entry)
 }
 
@@ -129,6 +199,7 @@ pub fn read_all(path: &Path) -> Result<Vec<Record>> {
         .filter_map(|line| {
             serde_json::from_str(line)
                 .map(Record::Room)
+                .or_else(|_| serde_json::from_str(line).map(Record::Guardrail))
                 .or_else(|_| serde_json::from_str(line).map(Record::Query))
                 .ok()
         })
@@ -241,6 +312,48 @@ mod tests {
             all.get(2),
             Some(Record::Room(RoomRecord::Received { messages: 3, .. }))
         ));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn guardrail_records_share_the_ledger_and_older_readers_skip_them() {
+        let path = temp("guardrail");
+        let at: Timestamp = "2026-11-10T12:00:00Z".parse().unwrap();
+        record(&path, &entry("shelter", Some(1))).unwrap();
+        record_guardrail(
+            &path,
+            &GuardrailRecord::Denied {
+                at,
+                session: Some("a04e3d0f".to_owned()),
+                tool: "Bash".to_owned(),
+                rule: "deny #1".to_owned(),
+                reason: "No force-push.".to_owned(),
+            },
+        )
+        .unwrap();
+        record_guardrail(
+            &path,
+            &GuardrailRecord::PolicyIgnored {
+                at,
+                reason: "mode 0664".to_owned(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(read(&path).unwrap().len(), 1);
+        let all = read_all(&path).unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(matches!(
+            all.get(1),
+            Some(Record::Guardrail(GuardrailRecord::Denied { .. }))
+        ));
+        assert!(matches!(
+            all.get(2),
+            Some(Record::Guardrail(GuardrailRecord::PolicyIgnored { .. }))
+        ));
+        // Nowhere for the command an agent sent.
+        let line = r#"{"guardrail_event":"denied","at":"2026-11-10T12:00:00Z","tool":"Bash","rule":"deny #1","reason":"x","command":"git push -f"}"#;
+        assert!(serde_json::from_str::<GuardrailRecord>(line).is_err());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

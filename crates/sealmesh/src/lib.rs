@@ -14,6 +14,7 @@ pub mod gitref;
 pub mod hook;
 pub mod install_hook;
 pub mod paths;
+pub mod policy;
 pub mod progress;
 pub mod render;
 pub mod room;

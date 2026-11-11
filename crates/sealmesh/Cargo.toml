@@ -39,6 +39,7 @@ futures-util = { workspace = true }
 gix = { workspace = true }
 jiff = { workspace = true }
 octocrab = { workspace = true }
+regex-lite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

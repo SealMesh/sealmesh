@@ -3,11 +3,38 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-const SUBSCRIPTIONS: &[(&str, Option<&str>)] = &[
-    ("UserPromptSubmit", None),
-    ("Stop", None),
-    ("PreToolUse", Some("AskUserQuestion")),
-    ("SessionEnd", None),
+struct Subscription {
+    event: &'static str,
+    matcher: Option<&'static str>,
+    /// Seconds Claude Code waits for the hook before going on without it.
+    timeout: Option<u64>,
+}
+
+/// `PreToolUse` takes every tool (`*`): one entry covers the guardrail,
+/// which must see every call, and `AskUserQuestion`, which marks the agent
+/// as needing input. It runs before every tool call, so it carries a short
+/// timeout; a hook that hangs past it is skipped and the call goes ahead.
+const SUBSCRIPTIONS: &[Subscription] = &[
+    Subscription {
+        event: "UserPromptSubmit",
+        matcher: None,
+        timeout: None,
+    },
+    Subscription {
+        event: "Stop",
+        matcher: None,
+        timeout: None,
+    },
+    Subscription {
+        event: "PreToolUse",
+        matcher: Some("*"),
+        timeout: Some(5),
+    },
+    Subscription {
+        event: "SessionEnd",
+        matcher: None,
+        timeout: None,
+    },
 ];
 
 pub struct Args {
@@ -119,30 +146,51 @@ fn merge(mut settings: Value, command: &str) -> Merged {
         };
     };
 
-    for (event, matcher) in SUBSCRIPTIONS {
-        let entries = hooks.entry(*event).or_insert_with(|| json!([]));
+    for sub in SUBSCRIPTIONS {
+        let event = sub.event;
+        let entries = hooks.entry(event).or_insert_with(|| json!([]));
         let Some(entries) = entries.as_array_mut() else {
             blocked.push(format!("hooks.{event}"));
             continue;
         };
+        let label = |matcher: Option<&str>| match matcher {
+            Some(m) => format!("{event}({m})"),
+            None => event.to_owned(),
+        };
 
-        if already_installed(entries, command) {
+        // This binary's entries under any other matcher are an older
+        // install (`PreToolUse(AskUserQuestion)` before the guardrail):
+        // replaced, never left beside the new one to fire twice.
+        let replaced: Vec<String> = take_ours_elsewhere(entries, command, sub.matcher)
+            .into_iter()
+            .map(|old| label(old.as_deref()))
+            .collect();
+        let note = if replaced.is_empty() {
+            String::new()
+        } else {
+            format!(" (replaces {})", replaced.join(", "))
+        };
+
+        if already_installed(entries, command, sub.matcher) {
+            if !replaced.is_empty() {
+                added.push(format!("{}{note}", label(sub.matcher)));
+            }
             continue;
         }
 
         let mut entry = serde_json::Map::new();
-        if let Some(matcher) = matcher {
+        if let Some(matcher) = sub.matcher {
             entry.insert("matcher".to_owned(), json!(matcher));
         }
-        entry.insert(
-            "hooks".to_owned(),
-            json!([{ "type": "command", "command": command }]),
-        );
+        let mut hook = serde_json::Map::new();
+        hook.insert("type".to_owned(), json!("command"));
+        hook.insert("command".to_owned(), json!(command));
+        if let Some(timeout) = sub.timeout {
+            hook.insert("timeout".to_owned(), json!(timeout));
+        }
+        entry.insert("hooks".to_owned(), json!([Value::Object(hook)]));
         entries.push(Value::Object(entry));
-        added.push(match matcher {
-            Some(m) => format!("{event}({m})"),
-            None => (*event).to_owned(),
-        });
+        added.push(format!("{}{note}", label(sub.matcher)));
     }
 
     Merged {
@@ -152,28 +200,64 @@ fn merge(mut settings: Value, command: &str) -> Merged {
     }
 }
 
-/// Whether this binary is already wired into an event's entry list.
+/// Whether this binary is already wired into an event's entry list under
+/// `matcher` — the same matcher, not just the same event, so an install
+/// from before a matcher changed is not mistaken for the current one.
 ///
 /// Matches the pre-rename `<binary> hook` as well as the current
 /// `<binary> claude-hook`. Without that, installing over a settings file
 /// written before the rename adds a second entry and both fire — the old one
 /// still works, because the subcommand keeps `hook` as an alias, so the
 /// duplicate would be silent.
-fn already_installed(entries: &[Value], command: &str) -> bool {
+fn already_installed(entries: &[Value], command: &str, matcher: Option<&str>) -> bool {
+    entries.iter().any(|entry| {
+        matcher_of(entry) == matcher
+            && entry
+                .get("hooks")
+                .and_then(Value::as_array)
+                .is_some_and(|hooks| hooks.iter().any(|h| is_ours(h, command)))
+    })
+}
+
+/// Removes this binary's hooks from every entry whose matcher is not
+/// `matcher`, drops an entry left with no hooks at all, and returns the
+/// matchers it took them from. Anyone else's hooks in those entries stay
+/// exactly where they were.
+fn take_ours_elsewhere(
+    entries: &mut Vec<Value>,
+    command: &str,
+    matcher: Option<&str>,
+) -> Vec<Option<String>> {
+    let mut taken = Vec::new();
+    entries.retain_mut(|entry| {
+        let old = matcher_of(entry).map(ToOwned::to_owned);
+        if old.as_deref() == matcher {
+            return true;
+        }
+        let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        let before = hooks.len();
+        hooks.retain(|h| !is_ours(h, command));
+        if hooks.len() == before {
+            return true;
+        }
+        taken.push(old);
+        !hooks.is_empty()
+    });
+    taken
+}
+
+fn matcher_of(entry: &Value) -> Option<&str> {
+    entry.get("matcher").and_then(Value::as_str)
+}
+
+fn is_ours(hook: &Value, command: &str) -> bool {
     let legacy = command
         .strip_suffix(" claude-hook")
         .map(|binary| format!("{binary} hook"));
-    entries.iter().any(|entry| {
-        entry
-            .get("hooks")
-            .and_then(Value::as_array)
-            .is_some_and(|hooks| {
-                hooks.iter().any(|h| {
-                    let found = h.get("command").and_then(Value::as_str);
-                    found == Some(command) || (found.is_some() && found == legacy.as_deref())
-                })
-            })
-    })
+    let found = hook.get("command").and_then(Value::as_str);
+    found == Some(command) || (found.is_some() && found == legacy.as_deref())
 }
 
 fn write_settings(path: &Path, settings: &Value) -> Result<()> {
@@ -185,13 +269,49 @@ fn write_settings(path: &Path, settings: &Value) -> Result<()> {
     let mut text = serde_json::to_string_pretty(settings).context("serialising settings")?;
     text.push('\n');
 
+    // The rename replaces the file, so the new one takes the old one's
+    // permissions explicitly; otherwise a settings file kept at 0600 would
+    // come back at whatever the umask allows.
+    let original = std::fs::metadata(path).ok().map(|m| m.permissions());
+
     let tmp = dir.join(format!(".settings.json.sealmesh.{}", std::process::id()));
-    std::fs::write(&tmp, &text).with_context(|| format!("writing {}", tmp.display()))?;
+    write_new(&tmp, &text, original.as_ref())
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    if let Some(permissions) = original
+        && let Err(error) = std::fs::set_permissions(&tmp, permissions)
+    {
+        std::fs::remove_file(&tmp).ok();
+        return Err(error).with_context(|| format!("setting permissions on {}", tmp.display()));
+    }
     if let Err(error) = std::fs::rename(&tmp, path) {
         std::fs::remove_file(&tmp).ok();
         return Err(error).with_context(|| format!("renaming into {}", path.display()));
     }
     Ok(())
+}
+
+/// Writes `text` to a new file at `path`, created with `original`'s mode
+/// from the start where the platform allows, so a private settings file is
+/// never briefly readable through its temp copy. (The umask may narrow the
+/// mode at creation; the caller sets it exactly afterwards.)
+fn write_new(
+    path: &Path,
+    text: &str,
+    original: Option<&std::fs::Permissions>,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        if let Some(original) = original {
+            options.mode(original.mode() & 0o777);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = original;
+    options.open(path)?.write_all(text.as_bytes())
 }
 
 #[cfg(test)]
@@ -236,13 +356,98 @@ mod tests {
         assert_eq!(added.len(), 4, "{added:?}");
         assert!(blocked.is_empty(), "{blocked:?}");
         let hooks = after["hooks"].as_object().unwrap();
-        for (event, _) in SUBSCRIPTIONS {
-            assert!(hooks.contains_key(*event), "missing {event}");
+        for sub in SUBSCRIPTIONS {
+            assert!(hooks.contains_key(sub.event), "missing {}", sub.event);
         }
+        assert_eq!(after["hooks"]["PreToolUse"][0]["matcher"], json!("*"));
         assert_eq!(
-            after["hooks"]["PreToolUse"][0]["matcher"],
-            json!("AskUserQuestion")
+            after["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
+            json!(5)
         );
+        assert!(
+            after["hooks"]["Stop"][0]["hooks"][0]
+                .get("timeout")
+                .is_none()
+        );
+    }
+
+    /// The `PreToolUse` entry an install before the guardrail wrote.
+    fn old_install(command: &str) -> Value {
+        let mut settings = realistic();
+        let hooks = settings["hooks"].as_object_mut().unwrap();
+        for event in ["UserPromptSubmit", "Stop", "SessionEnd"] {
+            hooks.insert(
+                event.to_owned(),
+                json!([{"hooks": [{"type": "command", "command": command}]}]),
+            );
+        }
+        hooks["PreToolUse"].as_array_mut().unwrap().push(json!({
+            "matcher": "AskUserQuestion",
+            "hooks": [{"type": "command", "command": command}]
+        }));
+        settings
+    }
+
+    #[test]
+    fn an_install_from_before_the_guardrail_is_migrated_not_duplicated() {
+        for old in [CMD, "/usr/local/bin/sealmesh claude-hook"] {
+            let merged = merge(old_install(old), "/usr/local/bin/sealmesh claude-hook");
+            assert_eq!(
+                merged.added,
+                vec!["PreToolUse(*) (replaces PreToolUse(AskUserQuestion))".to_owned()],
+                "{old}"
+            );
+            let pre = merged.settings["hooks"]["PreToolUse"].as_array().unwrap();
+            assert_eq!(pre.len(), 2, "{pre:?}");
+            assert_eq!(
+                pre[0]["matcher"],
+                json!("Bash"),
+                "the user's own entry moved"
+            );
+            assert_eq!(pre[1]["matcher"], json!("*"));
+            assert!(
+                !merged.settings.to_string().contains("AskUserQuestion"),
+                "the old matcher survived"
+            );
+
+            // And a second run is a no-op.
+            let again = merge(
+                merged.settings.clone(),
+                "/usr/local/bin/sealmesh claude-hook",
+            );
+            assert!(again.added.is_empty(), "{:?}", again.added);
+            assert_eq!(again.settings, merged.settings);
+        }
+    }
+
+    #[test]
+    fn a_migrated_entry_keeps_anyone_elses_hook_that_shared_it() {
+        let mut settings = old_install(CMD);
+        let pre = settings["hooks"]["PreToolUse"].as_array_mut().unwrap();
+        pre[1]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "command", "command": "/opt/notify.sh"}));
+        let merged = merge(settings, CMD);
+        let pre = merged.settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 3, "{pre:?}");
+        assert_eq!(pre[1]["matcher"], json!("AskUserQuestion"));
+        assert_eq!(
+            pre[1]["hooks"],
+            json!([{"type": "command", "command": "/opt/notify.sh"}])
+        );
+        assert_eq!(pre[2]["matcher"], json!("*"));
+    }
+
+    #[test]
+    fn being_installed_means_under_the_same_matcher() {
+        let entries = vec![json!({
+            "matcher": "AskUserQuestion",
+            "hooks": [{"type": "command", "command": CMD}]
+        })];
+        assert!(already_installed(&entries, CMD, Some("AskUserQuestion")));
+        assert!(!already_installed(&entries, CMD, Some("*")));
+        assert!(!already_installed(&entries, CMD, None));
     }
 
     #[test]
@@ -262,10 +467,7 @@ mod tests {
             before["hooks"]["PreToolUse"][0]
         );
         assert_eq!(after["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
-        assert_eq!(
-            after["hooks"]["PreToolUse"][1]["matcher"],
-            json!("AskUserQuestion")
-        );
+        assert_eq!(after["hooks"]["PreToolUse"][1]["matcher"], json!("*"));
     }
 
     #[test]
@@ -410,10 +612,17 @@ mod tests {
 
     #[test]
     fn the_subscriptions_cover_every_event_the_hook_handles() {
-        let events: Vec<&str> = SUBSCRIPTIONS.iter().map(|(e, _)| *e).collect();
+        let events: Vec<&str> = SUBSCRIPTIONS.iter().map(|s| s.event).collect();
         for required in ["UserPromptSubmit", "Stop", "PreToolUse", "SessionEnd"] {
             assert!(events.contains(&required), "not subscribed to {required}");
         }
+        // The guardrail must see every tool call, not only AskUserQuestion.
+        let pre = SUBSCRIPTIONS
+            .iter()
+            .find(|s| s.event == "PreToolUse")
+            .unwrap();
+        assert_eq!(pre.matcher, Some("*"));
+        assert!(pre.timeout.is_some_and(|t| t <= 10));
     }
 
     #[test]
@@ -425,11 +634,32 @@ mod tests {
         })];
         assert!(already_installed(
             &entries,
-            "/usr/local/bin/sealmesh claude-hook"
+            "/usr/local/bin/sealmesh claude-hook",
+            None
         ));
         assert!(
-            !already_installed(&entries, "/opt/other/sealmesh claude-hook"),
+            !already_installed(&entries, "/opt/other/sealmesh claude-hook", None),
             "a different binary's old entry counted as this one's"
         );
+    }
+
+    #[test]
+    fn rewriting_settings_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir =
+            std::env::temp_dir().join(format!("sealmesh-installhook-mode-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        for mode in [0o600, 0o640, 0o644] {
+            std::fs::write(&path, "{}").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            write_settings(&path, &merge(json!({}), CMD).settings).unwrap();
+            let after = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(after, mode, "{mode:o} became {after:o}");
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

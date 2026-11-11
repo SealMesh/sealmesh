@@ -3503,6 +3503,7 @@ dependencies = [
  "gix",
  "jiff",
  "octocrab",
+ "regex-lite",
  "sealmesh-chat-wire",
  "sealmesh-proto",
  "sealmesh-server",

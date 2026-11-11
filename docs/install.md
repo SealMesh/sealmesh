@@ -228,9 +228,16 @@ that gives you an honest `idle` when a turn ends and `NEEDS INPUT` the moment a
 session puts a question up — read from Claude Code's own events rather than
 guessed from how long you have been quiet.
 
+`PreToolUse` is subscribed with matcher `*` and a 5-second timeout, so the hook
+runs before every tool call. That's what lets the optional
+[guardrail](guardrail.md) deny a call; with no policy file it prints nothing
+and costs one `stat`.
+
 **It merges.** Your existing hooks and every setting Claude Code owns are
-preserved; running it twice does nothing. `--dry-run` prints the change first if
-you would rather look.
+preserved, and so are the settings file's permissions; running it twice does
+nothing. An install from before the guardrail (`PreToolUse` with matcher
+`AskUserQuestion`) is replaced by the `*` entry, not duplicated. `--dry-run`
+prints the change first if you would rather look.
 
 Two things worth knowing:
 
@@ -244,7 +251,10 @@ Two things worth knowing:
 The hook reads the payload through a typed struct with no field for prose — no
 prompt, no assistant message, no transcript path. That is why it is the
 `sealmesh` binary and not a shell script: a shell hook that logs its input for
-debugging, once, would defeat the whole design.
+debugging, once, would defeat the whole design. The guardrail reads a tool
+call's `tool_input` (the command line, the file path) to match it against your
+policy, and keeps none of it: a deny's audit line holds the tool name, the
+rule and the policy's reason, never the command.
 
 ### Making subagent workers visible
 
