@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -10,10 +11,10 @@ use std::{
 use axum::{
     Router,
     extract::{
-        State,
+        ConnectInfo, FromRequestParts, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::StatusCode,
+    http::{StatusCode, request::Parts},
     response::Response,
     routing::get,
 };
@@ -23,7 +24,7 @@ use sealmesh_proto::{
 };
 
 use crate::{
-    auth::{Denied, Directory, authenticate},
+    auth::{Denied, Directory, PeerIdentity, authenticate_peer},
     check_budget::CheckBudgets,
     history::RoomHistory,
     projects::ProjectMap,
@@ -146,18 +147,38 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
+/// The connection's peer address, when the listener records one: a TCP
+/// listener served through [`crate::run`] does, a Unix socket does not. Only a
+/// directory that identifies by peer (otw) reads it; to every other one this
+/// is `None`-tolerant and unused.
+struct Peer(Option<SocketAddr>);
+
+impl<S: Send + Sync> FromRequestParts<S> for Peer {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| *addr),
+        ))
+    }
+}
+
 async fn connect<D: Directory + 'static>(
     upgrade: WebSocketUpgrade,
+    Peer(peer): Peer,
     State(session): State<Session<D>>,
 ) -> Response {
     upgrade
         .max_message_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| run(socket, session))
+        .on_upgrade(move |socket| run(socket, session, peer))
 }
 
-async fn run<D: Directory>(mut socket: WebSocket, session: Session<D>) {
-    let Some((host, role, token)) =
-        within(HANDSHAKE_TIMEOUT, handshake(&mut socket, &session)).await
+async fn run<D: Directory>(mut socket: WebSocket, session: Session<D>, peer: Option<SocketAddr>) {
+    let Some((PeerIdentity { host, machine }, role, token)) =
+        within(HANDSHAKE_TIMEOUT, handshake(&mut socket, &session, peer)).await
     else {
         let _ = send(&mut socket, &ServerFrame::Denied {}).await;
         return;
@@ -176,7 +197,7 @@ async fn run<D: Directory>(mut socket: WebSocket, session: Session<D>) {
     // by this connection's task — never put in a shared structure, never
     // persisted, never logged (rule 7).
     match role {
-        Role::Daemon => serve_daemon(socket, &session.app, host, token).await,
+        Role::Daemon => serve_daemon(socket, &session.app, host, machine, token).await,
         Role::Reader => serve_reader(socket, &session.app, host, token).await,
     }
 }
@@ -185,17 +206,21 @@ async fn within<T>(limit: Duration, step: impl Future<Output = Option<T>>) -> Op
     tokio::time::timeout(limit, step).await.ok().flatten()
 }
 
+/// Reads `Hello` and decides who sent it. A directory that identifies by
+/// token (cloud, std) sees exactly the call it always did; one that identifies
+/// by peer (otw) answers from `peer` and ignores the token.
 async fn handshake<D: Directory>(
     socket: &mut WebSocket,
     session: &Session<D>,
-) -> Option<(sealmesh_wire::HostId, Role, SecretToken)> {
+    peer: Option<SocketAddr>,
+) -> Option<(PeerIdentity, Role, SecretToken)> {
     let Received::Frame(frame) = recv::<ClientFrame>(socket).await else {
         return None;
     };
     let (role, token) = credential(frame)?;
 
-    match authenticate(&session.app.directory, &token).await {
-        Ok(host) => Some((host, role, token)),
+    match authenticate_peer(&session.app.directory, &token, peer).await {
+        Ok(identity) => Some((identity, role, token)),
         Err(Denied::NoCredential | Denied::NotAuthorised) => None,
     }
 }
@@ -333,9 +358,25 @@ async fn serve_daemon<D: Directory>(
     mut socket: WebSocket,
     app: &Arc<App<D>>,
     host: sealmesh_wire::HostId,
+    machine: Option<sealmesh_proto::MachineName>,
     token: SecretToken,
 ) {
     let (mut outbox, attached) = app.registry.attach(host.clone());
+    // When the handshake proved which machine this is (otw: the Tailscale
+    // node name), the router names it, and the daemon's own `Machine` frame
+    // is ignored below: the network's word over the daemon's.
+    let named_by_router = match machine {
+        Some(machine) => {
+            if let Some(replaced) = attached.name(machine).filter(|n| *n > 0) {
+                eprintln!(
+                    "sealmesh-server: {host} reconnected from a machine it was already \
+                     connected from, and replaced {replaced} older connection(s)"
+                );
+            }
+            true
+        }
+        None => false,
+    };
     let (mut deliveries, membership) = app.rooms.connect(host.clone());
     let mut revalidate = revalidation_timer(app.room_revalidate_every, jitter_seed(&host));
 
@@ -553,6 +594,7 @@ async fn serve_daemon<D: Directory>(
                     // per connection: a second name is ignored, so a
                     // connection cannot walk through names evicting this
                     // person's other machines.
+                    Received::Frame(ClientFrame::Machine { .. }) if named_by_router => {}
                     Received::Frame(ClientFrame::Machine { name }) => {
                         match attached.name(name) {
                             Some(0) => {}
@@ -1121,7 +1163,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::{auth::RepoAccess, history::Fake};
+    use crate::{
+        auth::{RepoAccess, authenticate},
+        history::Fake,
+    };
     use sealmesh_wire::RepoSlug;
 
     /// A fresh in-memory history store. Every test in this module posts

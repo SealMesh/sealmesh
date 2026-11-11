@@ -12,15 +12,17 @@ use sealmesh_server::{
     check_budget::{CHECKS_PER_HOUR_VAR, CheckBudgets, checks_per_hour_from_env},
     config::{
         ACCESS_CACHE_TTL_VAR, CONFIG_VAR, HISTORY_BACKEND_VAR, HISTORY_PATH_VAR, LISTEN_VAR,
-        ORG_VAR, ServerConfig,
+        MODE_VAR, ORG_VAR, ServerConfig, ServerMode,
     },
     github::Github,
     history::{self, RoomHistory, sqlite::SqliteHistory},
     http::App,
-    listen::{TLS_TERMINATOR_VAR, permit_plaintext},
+    listen::{TLS_TERMINATOR_VAR, permit_plaintext, permit_tailnet_bind},
+    mode_directory::ModeDirectory,
     projects::{PROJECTS_VAR, ProjectMap},
     room_budget::{TOKENS_PER_HOUR_VAR, tokens_per_hour_from_env},
     rooms::Rooms,
+    tailscale::{Allowlist, TailscaleDirectory, default_socket},
     turn_cap::{TURN_CAP_VAR, turn_cap_from_env},
 };
 
@@ -79,6 +81,44 @@ fn load_config(args: &Args) -> Result<ServerConfig> {
         Some(path) => ServerConfig::load(&path),
         None => Ok(ServerConfig::default()),
     }
+}
+
+/// The otw router's directory, from `[otw]`. Refused when the section is
+/// missing or admits nobody.
+fn otw_directory(config: &ServerConfig) -> Result<TailscaleDirectory> {
+    let section = config.otw.as_ref().context(
+        "mode = \"otw\" needs an [otw] section listing allow_users or allow_tags, \
+         or nobody could connect",
+    )?;
+    let allow = Allowlist::new(section.allow_users.clone(), section.allow_tags.clone())?;
+    let socket = section
+        .tailscaled_socket
+        .clone()
+        .unwrap_or_else(default_socket);
+    Ok(TailscaleDirectory::new(socket, allow))
+}
+
+/// The otw router's listen address: required, a literal `ip:port`, and on
+/// the tailnet. Checked before binding, so a wildcard is never bound even
+/// for a moment.
+fn otw_listen(config: &ServerConfig) -> Result<SocketAddr> {
+    let raw = config.setting(LISTEN_VAR).map_err(|_| {
+        anyhow::anyhow!(
+            "mode = \"otw\" needs listen set to this machine's tailnet address and a port \
+             (e.g. \"100.101.102.103:8787\"; `tailscale ip -4` prints the address)"
+        )
+    })?;
+    let addr: SocketAddr = raw.trim().parse().with_context(|| {
+        format!("{LISTEN_VAR} must be a tailnet ip:port in otw mode, not {raw:?}")
+    })?;
+    permit_tailnet_bind(addr, false)?;
+    if config.setting(TLS_TERMINATOR_VAR).is_ok() {
+        bail!(
+            "{TLS_TERMINATOR_VAR} is set, but an otw router must see each peer's own tailnet \
+             address to ask Tailscale who it is, so nothing may sit in front of it. Unset it"
+        );
+    }
+    Ok(addr)
 }
 
 fn listen_addr(config: &ServerConfig) -> String {
@@ -244,6 +284,18 @@ async fn main() -> Result<()> {
         return healthcheck(&config).await;
     }
 
+    let mode = ServerMode::parse(config.setting(MODE_VAR))?;
+    if mode == ServerMode::Otw {
+        return serve_otw(&config).await;
+    }
+    if !config.rooms.is_empty() {
+        bail!(
+            "[[room]] is set, but named rooms exist only on an otw router. A cloud router \
+             decides who may join a room from GitHub; remove the [[room]] blocks or set \
+             mode = \"otw\""
+        );
+    }
+
     let org = config
         .setting(ORG_VAR)
         .with_context(|| format!("{ORG_VAR} is not set, so nobody could be authorised"))?;
@@ -254,9 +306,7 @@ async fn main() -> Result<()> {
     let projects = config.setting(PROJECTS_VAR).with_context(|| {
         format!("{PROJECTS_VAR} is not set, so no repo could be placed in a project")
     })?;
-    let projects = ProjectMap::parse(&projects).with_context(|| {
-        format!("{PROJECTS_VAR} is invalid, refusing to start with part of a project map")
-    })?;
+    let projects = parse_projects(&projects)?;
     let project_count = projects.len();
 
     let access_cache_ttl = access_cache_ttl(&config)?;
@@ -299,6 +349,59 @@ async fn main() -> Result<()> {
             reader_checks.get()
         ),
     }
+    sealmesh_server::run(app, Listener::Tcp(listener)).await
+}
+
+fn parse_projects(raw: &str) -> Result<ProjectMap> {
+    ProjectMap::parse(raw).with_context(|| {
+        format!("{PROJECTS_VAR} is invalid, refusing to start with part of a project map")
+    })
+}
+
+/// An otw router: identity from Tailscale whois, bound only to this
+/// machine's tailnet address, plaintext inside WireGuard. No GitHub org is
+/// asked anything; `projects` is optional (no project rooms without it).
+async fn serve_otw(config: &ServerConfig) -> Result<()> {
+    let directory = otw_directory(config)?;
+    let addr = otw_listen(config)?;
+    let named = config.named_rooms()?;
+    let named_count = named.len();
+    let projects = match config.setting(PROJECTS_VAR) {
+        Ok(raw) => parse_projects(&raw)?,
+        Err(_) => ProjectMap::empty(),
+    }
+    .with_named_rooms(named);
+    let project_count = projects.len();
+    let room_tokens = tokens_per_hour_from_env(config.setting(TOKENS_PER_HOUR_VAR))?;
+    let turn_cap = turn_cap_from_env(config.setting(TURN_CAP_VAR))?;
+    let reader_checks = checks_per_hour_from_env(config.setting(CHECKS_PER_HOUR_VAR))?;
+    let (history, recorded_in) = open_history(config).await?;
+
+    let socket = directory.socket().display().to_string();
+    let allow = directory.allowlist();
+    let admits = [allow.users.join(", "), allow.tags.join(", ")]
+        .into_iter()
+        .filter(|list| !list.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    let rooms = Rooms::with_limits(room_tokens, turn_cap, history);
+    let mut app = App::with_rooms(ModeDirectory::from(directory), projects, rooms);
+    app.check_budgets = CheckBudgets::new(reader_checks);
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
+    let bound = listener
+        .local_addr()
+        .context("reading back the address that was bound")?;
+    permit_tailnet_bind(bound, false)?;
+
+    let retention_days = history::RETENTION.as_secs() / (24 * 60 * 60);
+    eprintln!(
+        "sealmesh-server (otw) listening on {bound} (tailnet, plaintext inside WireGuard), \
+         identifying peers with tailscaled at {socket}, admitting {admits}, {project_count} \
+         projects mapped, {named_count} named rooms, room messages recorded in {recorded_in} for {retention_days} days"
+    );
     sealmesh_server::run(app, Listener::Tcp(listener)).await
 }
 
@@ -447,6 +550,47 @@ mod tests {
     fn a_bad_command_line_is_refused_not_guessed() {
         assert!(args(&["--config"]).is_err());
         assert!(args(&["--verbose"]).is_err());
+    }
+
+    fn otw_config(text: &str) -> ServerConfig {
+        toml::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn an_otw_router_needs_an_allowlist() {
+        assert!(otw_directory(&otw_config("mode = \"otw\"")).is_err());
+        assert!(otw_directory(&otw_config("mode = \"otw\"\n[otw]\n")).is_err());
+        let directory = otw_directory(&otw_config(
+            "mode = \"otw\"\n[otw]\nallow_users = [\"alice@github\"]",
+        ))
+        .unwrap();
+        assert_eq!(directory.socket(), default_socket());
+    }
+
+    // These read `listen` from the file. The real environment could override
+    // it only if SEALMESH_LISTEN were set while tests run, which CI never does.
+    #[test]
+    fn an_otw_router_refuses_to_bind_off_the_tailnet() {
+        for listen in [
+            "0.0.0.0:8787",
+            "[::]:8787",
+            "203.0.113.7:8787",
+            "127.0.0.1:8787",
+        ] {
+            let config = otw_config(&format!("mode = \"otw\"\nlisten = \"{listen}\""));
+            assert!(otw_listen(&config).is_err(), "bound otw on {listen}");
+        }
+        for listen in ["100.101.102.103:8787", "[fd7a:115c:a1e0::5]:8787"] {
+            let config = otw_config(&format!("mode = \"otw\"\nlisten = \"{listen}\""));
+            assert_eq!(
+                otw_listen(&config).unwrap(),
+                listen.parse::<SocketAddr>().unwrap()
+            );
+        }
+        let behind_tls = otw_config(
+            "mode = \"otw\"\nlisten = \"100.101.102.103:8787\"\ntls_terminated_by = \"caddy\"",
+        );
+        assert!(otw_listen(&behind_tls).is_err());
     }
 
     #[test]

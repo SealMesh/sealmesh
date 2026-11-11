@@ -31,7 +31,7 @@ pub struct Connected {
 /// router's Unix-socket path lands with the std PR, and until then this says
 /// so rather than guessing a URL.
 pub async fn connect(config: &Config, role: Role) -> Result<Connected> {
-    let url = config.server()?.connect_url()?;
+    let url = config.router_url()?;
     let source = config.credential_source()?;
     connect_to(&url, &source, role).await
 }

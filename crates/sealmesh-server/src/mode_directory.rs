@@ -6,23 +6,26 @@
 //!
 //! - `Github`: cloud mode, the access cache over the GitHub resolver.
 //! - `LocalOwner`: std mode, the embedded router's per-boot secret.
-//!
-// TODO(otw): add `Tailscale(..)` here; identity comes from Tailscale whois on
-// the connection, not from the (empty) token.
+//! - `Tailscale`: otw mode; identity comes from Tailscale whois on the
+//!   connection's peer address, not from the (empty) token.
+
+use std::net::SocketAddr;
 
 use sealmesh_proto::SecretToken;
 use sealmesh_wire::RepoSlug;
 
 use crate::{
     access_cache::CachingDirectory,
-    auth::{Denied, Directory, PullSummary, PullsUnverifiable, RepoAccess},
+    auth::{Denied, Directory, PeerIdentity, PullSummary, PullsUnverifiable, RepoAccess},
     github::Github,
     local_owner::LocalOwner,
+    tailscale::TailscaleDirectory,
 };
 
 pub enum ModeDirectory {
     Github(CachingDirectory<Github>),
     LocalOwner(LocalOwner),
+    Tailscale(TailscaleDirectory),
 }
 
 impl Directory for ModeDirectory {
@@ -30,6 +33,7 @@ impl Directory for ModeDirectory {
         match self {
             Self::Github(directory) => directory.login(token).await,
             Self::LocalOwner(directory) => directory.login(token).await,
+            Self::Tailscale(directory) => directory.login(token).await,
         }
     }
 
@@ -37,6 +41,7 @@ impl Directory for ModeDirectory {
         match self {
             Self::Github(directory) => directory.is_member(token).await,
             Self::LocalOwner(directory) => directory.is_member(token).await,
+            Self::Tailscale(directory) => directory.is_member(token).await,
         }
     }
 
@@ -44,6 +49,7 @@ impl Directory for ModeDirectory {
         match self {
             Self::Github(directory) => directory.can_read(token, repo).await,
             Self::LocalOwner(directory) => directory.can_read(token, repo).await,
+            Self::Tailscale(directory) => directory.can_read(token, repo).await,
         }
     }
 
@@ -51,6 +57,7 @@ impl Directory for ModeDirectory {
         match self {
             Self::Github(directory) => directory.known_access(token, repo),
             Self::LocalOwner(directory) => directory.known_access(token, repo),
+            Self::Tailscale(directory) => directory.known_access(token, repo),
         }
     }
 
@@ -62,6 +69,18 @@ impl Directory for ModeDirectory {
         match self {
             Self::Github(directory) => directory.recent_pulls(token, repo).await,
             Self::LocalOwner(directory) => directory.recent_pulls(token, repo).await,
+            Self::Tailscale(directory) => directory.recent_pulls(token, repo).await,
+        }
+    }
+
+    async fn peer_identity(
+        &self,
+        peer: Option<SocketAddr>,
+    ) -> Option<Result<PeerIdentity, Denied>> {
+        match self {
+            Self::Github(directory) => directory.peer_identity(peer).await,
+            Self::LocalOwner(directory) => directory.peer_identity(peer).await,
+            Self::Tailscale(directory) => directory.peer_identity(peer).await,
         }
     }
 }
@@ -75,6 +94,12 @@ impl From<CachingDirectory<Github>> for ModeDirectory {
 impl From<LocalOwner> for ModeDirectory {
     fn from(directory: LocalOwner) -> Self {
         Self::LocalOwner(directory)
+    }
+}
+
+impl From<TailscaleDirectory> for ModeDirectory {
+    fn from(directory: TailscaleDirectory) -> Self {
+        Self::Tailscale(directory)
     }
 }
 
@@ -97,5 +122,35 @@ mod tests {
         assert_eq!(directory.can_read(&good, &repo).await, RepoAccess::Readable);
         assert_eq!(directory.known_access(&good, &repo), None);
         assert!(directory.recent_pulls(&good, &repo).await.is_err());
+        assert_eq!(directory.peer_identity(None).await, None);
+    }
+
+    #[tokio::test]
+    async fn the_tailscale_arm_identifies_by_peer_and_never_by_token() {
+        let allow =
+            crate::tailscale::Allowlist::new(vec!["alice@github".to_owned()], vec![]).unwrap();
+        let directory = ModeDirectory::from(TailscaleDirectory::new(
+            std::path::PathBuf::from("/nonexistent/tailscaled.sock"),
+            allow,
+        ));
+        let token = SecretToken::new(String::new());
+        let repo = RepoSlug::try_from("o/r").unwrap();
+        assert_eq!(directory.is_member(&token).await, Ok(false));
+        assert_eq!(
+            directory.can_read(&token, &repo).await,
+            RepoAccess::Readable
+        );
+        assert_eq!(
+            directory.known_access(&token, &repo),
+            Some(RepoAccess::Readable)
+        );
+        assert!(directory.recent_pulls(&token, &repo).await.is_err());
+        // tailscaled is not there, so the peer is refused, not waved through.
+        assert_eq!(
+            directory
+                .peer_identity(Some("100.64.0.1:1".parse().unwrap()))
+                .await,
+            Some(Err(Denied::NotAuthorised))
+        );
     }
 }

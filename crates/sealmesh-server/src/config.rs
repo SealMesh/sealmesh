@@ -21,6 +21,26 @@
 //! path = "/data/history.sqlite"         # SEALMESH_HISTORY_PATH
 //! # table = "..."                       # DYNAMODB_ROOM_HISTORY, backend = "dynamodb"
 //! ```
+//!
+//! An otw router (on one of your machines, reached over Tailscale) sets
+//! `mode` and an `[otw]` allowlist instead of `github_org`:
+//!
+//! ```toml
+//! mode = "otw"                          # SEALMESH_MODE; "cloud" when absent
+//! listen = "100.101.102.103:8787"       # this machine's tailnet address
+//!
+//! [otw]
+//! allow_users = ["alice@github"]        # Tailscale login names
+//! allow_tags = ["tag:sealmesh"]         # ACL tags
+//! # tailscaled_socket = "/var/run/tailscale/tailscaled.sock"
+//!
+//! [history]
+//! path = "/var/lib/sealmesh/history.sqlite"
+//!
+//! [[room]]                              # optional named rooms, otw only
+//! name = "ops"
+//! members = ["alice-github", "tag-sealmesh"]
+//! ```
 
 use std::{
     env::VarError,
@@ -38,6 +58,8 @@ use crate::{
 /// Where the config file is, when `--config` isn't given.
 pub const CONFIG_VAR: &str = "SEALMESH_CONFIG";
 pub const ORG_VAR: &str = "SEALMESH_GITHUB_ORG";
+/// `cloud` (the default) or `otw`.
+pub const MODE_VAR: &str = "SEALMESH_MODE";
 pub const LISTEN_VAR: &str = "SEALMESH_LISTEN";
 pub const ACCESS_CACHE_TTL_VAR: &str = "SEALMESH_ACCESS_CACHE_TTL_SECS";
 /// `sqlite` (the default) or `dynamodb` (a build with the `dynamodb` feature).
@@ -53,6 +75,7 @@ pub const HISTORY_TABLE_VAR: &str = "DYNAMODB_ROOM_HISTORY";
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
+    pub mode: Option<String>,
     pub github_org: Option<String>,
     pub listen: Option<String>,
     pub projects: Option<Vec<ProjectConfig>>,
@@ -63,6 +86,87 @@ pub struct ServerConfig {
     pub tls_terminated_by: Option<String>,
     #[serde(default)]
     pub history: HistoryConfig,
+    /// `[otw]`: who an otw router admits. Read only in otw mode.
+    pub otw: Option<OtwConfig>,
+    /// Named rooms (`[[room]]`), otw only: a cloud router decides rooms from
+    /// GitHub and refuses to start with one.
+    #[serde(default, rename = "room")]
+    pub rooms: Vec<RoomConfig>,
+}
+
+/// One `[[room]]`: a named room and the hosts that may join it. A host here
+/// is what the handshake folds an identity into (`alice@github` is
+/// `alice-github`, `tag:sealmesh` is `tag-sealmesh`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomConfig {
+    pub name: sealmesh_chat_wire::RoomName,
+    pub members: Vec<sealmesh_wire::HostId>,
+}
+
+impl ServerConfig {
+    /// The `[[room]]` blocks as the router's named-room table. A duplicate
+    /// name or an empty member list is refused, as the daemon refuses them.
+    pub fn named_rooms(&self) -> anyhow::Result<crate::named_rooms::NamedRooms> {
+        let mut table = crate::named_rooms::NamedRooms::new();
+        for room in &self.rooms {
+            if table.members_of(&room.name).is_some() {
+                anyhow::bail!("[[room]] {} is declared twice", room.name);
+            }
+            if room.members.is_empty() {
+                anyhow::bail!(
+                    "[[room]] {} lists no members, so nobody could join it",
+                    room.name
+                );
+            }
+            table.insert(room.name.clone(), room.members.iter().cloned());
+        }
+        Ok(table)
+    }
+}
+
+/// Which router this is: a GitHub-backed cloud router, or an otw router whose
+/// identity comes from Tailscale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ServerMode {
+    #[default]
+    Cloud,
+    Otw,
+}
+
+impl ServerMode {
+    /// Parses [`MODE_VAR`]'s value. Absent is `cloud`, which is what every
+    /// deployment from before modes means; anything unrecognised is an error,
+    /// not a guess.
+    pub fn parse(value: Result<String, VarError>) -> anyhow::Result<Self> {
+        match value {
+            Err(VarError::NotPresent) => Ok(Self::Cloud),
+            Err(VarError::NotUnicode(_)) => anyhow::bail!("{MODE_VAR} is not valid UTF-8"),
+            Ok(raw) => match raw.trim() {
+                "cloud" => Ok(Self::Cloud),
+                "otw" => Ok(Self::Otw),
+                "std" => anyhow::bail!(
+                    "{MODE_VAR} is \"std\", but a std router runs inside `sealmesh daemon`, \
+                     not as sealmesh-server. Use \"cloud\" or \"otw\""
+                ),
+                other => anyhow::bail!("{MODE_VAR} must be \"cloud\" or \"otw\", not {other:?}"),
+            },
+        }
+    }
+}
+
+/// `[otw]`: the router's own allowlist, on top of the tailnet ACL. Both lists
+/// empty admits nobody, so the router refuses to start.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OtwConfig {
+    #[serde(default)]
+    pub allow_users: Vec<String>,
+    #[serde(default)]
+    pub allow_tags: Vec<String>,
+    /// The `tailscaled` LocalAPI socket. Defaults to the open-source daemon's
+    /// path on this platform (`crate::tailscale::default_socket`).
+    pub tailscaled_socket: Option<PathBuf>,
 }
 
 /// One project: an id and the repos it spans.
@@ -114,6 +218,7 @@ impl ServerConfig {
     fn file_value(&self, var: &str) -> Option<String> {
         let number = |value: Option<u64>| value.map(|n| n.to_string());
         match var {
+            MODE_VAR => self.mode.clone(),
             ORG_VAR => self.github_org.clone(),
             LISTEN_VAR => self.listen.clone(),
             // The project map's own parser reads JSON; the file's table is
@@ -225,6 +330,64 @@ mod tests {
     fn an_unknown_key_is_refused_rather_than_ignored() {
         assert!(toml::from_str::<ServerConfig>("github_orgg = \"typo\"").is_err());
         assert!(toml::from_str::<ServerConfig>("[history]\nbakend = \"sqlite\"").is_err());
+    }
+
+    #[test]
+    fn the_mode_defaults_to_cloud_and_reads_otw() {
+        assert_eq!(
+            ServerMode::parse(ServerConfig::default().setting_with(MODE_VAR, unset)).unwrap(),
+            ServerMode::Cloud
+        );
+        let otw = parse(
+            r#"
+            mode = "otw"
+            listen = "100.101.102.103:8787"
+            [otw]
+            allow_users = ["alice@github"]
+            allow_tags = ["tag:sealmesh"]
+            tailscaled_socket = "/tmp/ts.sock"
+        "#,
+        );
+        assert_eq!(
+            ServerMode::parse(otw.setting_with(MODE_VAR, unset)).unwrap(),
+            ServerMode::Otw
+        );
+        let section = otw.otw.unwrap();
+        assert_eq!(section.allow_users, ["alice@github"]);
+        assert_eq!(section.allow_tags, ["tag:sealmesh"]);
+        assert_eq!(
+            section.tailscaled_socket,
+            Some(PathBuf::from("/tmp/ts.sock"))
+        );
+    }
+
+    #[test]
+    fn named_rooms_are_read_and_checked() {
+        let config = parse(
+            r#"
+            [[room]]
+            name = "ops"
+            members = ["alice-github", "tag-sealmesh"]
+        "#,
+        );
+        let table = config.named_rooms().unwrap();
+        let ops = sealmesh_chat_wire::RoomName::try_from("ops").unwrap();
+        let alice = sealmesh_wire::HostId::try_from("alice-github").unwrap();
+        assert!(table.admits(&ops, &alice));
+        for bad in [
+            "[[room]]\nname = \"ops\"\nmembers = []",
+            "[[room]]\nname = \"ops\"\nmembers = [\"a\"]\n[[room]]\nname = \"ops\"\nmembers = [\"b\"]",
+        ] {
+            assert!(parse(bad).named_rooms().is_err(), "{bad}");
+        }
+        assert!(ServerConfig::default().named_rooms().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unknown_mode_or_otw_key_is_refused() {
+        assert!(ServerMode::parse(Ok("std".to_owned())).is_err());
+        assert!(ServerMode::parse(Ok("tailscale".to_owned())).is_err());
+        assert!(toml::from_str::<ServerConfig>("[otw]\nallow_user = [\"a\"]").is_err());
     }
 
     #[cfg(feature = "dynamodb")]

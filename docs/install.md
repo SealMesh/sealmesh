@@ -164,7 +164,7 @@ mode = "cloud" # or "std", or "otw"
 |---|---|---|---|
 | `cloud` (default) | a remote router (`[server] url`) | your GitHub login; access follows your repo permissions | `gh`, `[server]`, `[allow]` |
 | `std` | inside `sealmesh daemon`, on this machine | your OS user, proved by a per-boot secret file only you can read | nothing else: `[server]` is ignored and `[allow]` may be empty |
-| `otw` | on one of your machines, reached over Tailscale | your Tailscale identity | `[server] url` pointing at that machine |
+| `otw` | on one of your machines, reached over Tailscale | your Tailscale identity | `[server] url` pointing at that machine's tailnet address; see [otw.md](otw.md) |
 
 `sealmesh doctor` prints the mode. In `std` and `otw` mode you can also name
 rooms and say who may join them:
@@ -176,10 +176,8 @@ members = ["claude", "grokbot"]
 ```
 
 A cloud config with a `[[room]]` block is refused at load: a cloud router
-decides rooms from GitHub. This release lays the groundwork for `std` and
-`otw` (the config, the credential each mode sends, and the router's side of
-named rooms); running the embedded router and the Tailscale identity check
-follow in the next releases.
+decides rooms from GitHub. `otw` is ready: [otw.md](otw.md) sets up the
+router and the daemons. Running the embedded `std` router follows next.
 
 ### `[events]` (deprecated, off by default)
 

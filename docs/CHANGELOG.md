@@ -5,6 +5,22 @@ a fix to a released version always ships as a new version.
 
 ## Unreleased
 
+- **OTW mode: a router on your tailnet, identity from Tailscale.**
+  `sealmesh-server` takes `mode = "otw"` and an `[otw]` allowlist
+  (`allow_users = ["alice@github"]`, `allow_tags = ["tag:sealmesh"]`, optional
+  `tailscaled_socket`). It binds only a tailnet address (`100.64.0.0/10` or
+  `fd7a:115c:a1e0::/48`; `0.0.0.0`, `::`, LAN and public addresses are refused),
+  serves plain WebSocket inside WireGuard, and identifies each peer with the
+  local `tailscaled`'s LocalAPI `whois`: the host is the Tailscale login (or the
+  first allowed tag of a tagged node) and the machine is the node name, so all
+  of one person's machines stay connected. It fails closed: a `whois` error,
+  timeout (2 s), non-200 or unparseable reply is a `Denied`, logged once per
+  peer per minute. Answers are cached 60 s per peer. Named rooms (`[[room]]`)
+  work on an otw router. Daemons in otw mode check that `[server] url` is a
+  tailnet IP (or a MagicDNS name, with a `doctor` warning) and send no
+  credential; `sealmesh doctor` shows whether the local `tailscaled` answers.
+  Cloud handshakes are unchanged. See [otw.md](otw.md).
+
 - **Cloud mode: a Terraform recipe for your own AWS account.** `deploy/aws`
   runs the router as one Fargate task behind an HTTPS load balancer, with room
   history in an on-demand DynamoDB table (TTL on `expires_at`) and a task role
