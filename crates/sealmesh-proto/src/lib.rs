@@ -1,5 +1,7 @@
 use std::fmt;
 
+pub mod tailnet;
+
 use sealmesh_chat_wire::{Body, MessageKind, RoomId};
 use sealmesh_wire::{Event, HostId, ProjectId, RepoSlug, Snapshot};
 use serde::{Deserialize, Serialize};

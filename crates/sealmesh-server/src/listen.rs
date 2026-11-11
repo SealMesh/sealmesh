@@ -27,6 +27,39 @@ pub fn permit_plaintext(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "refusing to serve otw mode on {addr}, which is not a tailnet address. An otw router \
+     must bind this machine's Tailscale address (in 100.64.0.0/10 or fd7a:115c:a1e0::/48; \
+     `tailscale ip -4` prints it), so that only the tailnet can reach it and every peer \
+     can be identified with Tailscale whois. 0.0.0.0, :: and LAN or public addresses are \
+     refused."
+)]
+pub struct OffTailnetRefused {
+    pub addr: SocketAddr,
+}
+
+/// The otw-mode version of [`permit_plaintext`]: plaintext is allowed on a
+/// tailnet address and nowhere else, with no TLS terminator to declare.
+///
+/// WireGuard already encrypts and authenticates every hop between tailnet
+/// nodes, and the handshake carries no credential in otw mode (identity comes
+/// from whois), so a plain WebSocket on the tailnet address leaks nothing. A
+/// wildcard bind would also be reachable off the tailnet, by peers whois could
+/// not vouch for, so it is refused. Loopback is refused too unless
+/// `allow_loopback`, which only a test sets.
+pub fn permit_tailnet_bind(
+    addr: SocketAddr,
+    allow_loopback: bool,
+) -> Result<(), OffTailnetRefused> {
+    let ip = addr.ip().to_canonical();
+    if sealmesh_proto::tailnet::is_tailnet_ip(ip) || (allow_loopback && ip.is_loopback()) {
+        Ok(())
+    } else {
+        Err(OffTailnetRefused { addr })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -70,6 +103,47 @@ mod tests {
         for local in ["127.0.0.1:8787", "[::1]:8787"] {
             assert_eq!(permit_plaintext(addr(local), None), Ok(()), "{local}");
         }
+    }
+
+    #[test]
+    fn otw_binds_only_a_tailnet_address() {
+        for tailnet in [
+            "100.64.0.1:8787",
+            "100.101.102.103:8787",
+            "[fd7a:115c:a1e0::1]:8787",
+        ] {
+            assert_eq!(
+                permit_tailnet_bind(addr(tailnet), false),
+                Ok(()),
+                "{tailnet}"
+            );
+        }
+        for off in [
+            "0.0.0.0:8787",
+            "[::]:8787",
+            "203.0.113.7:8787",
+            "8.8.8.8:8787",
+            "192.168.1.20:8787",
+            "100.128.0.1:8787",
+            "127.0.0.1:8787",
+            "[::1]:8787",
+        ] {
+            assert_eq!(
+                permit_tailnet_bind(addr(off), false),
+                Err(OffTailnetRefused { addr: addr(off) }),
+                "bound otw on {off}"
+            );
+        }
+    }
+
+    #[test]
+    fn otw_loopback_is_only_for_a_test_that_asks() {
+        assert!(permit_tailnet_bind(addr("127.0.0.1:8787"), true).is_ok());
+        assert!(permit_tailnet_bind(addr("0.0.0.0:8787"), true).is_err());
+        let message = permit_tailnet_bind(addr("0.0.0.0:8787"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("tailscale ip"), "{message}");
     }
 
     #[test]

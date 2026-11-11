@@ -1,4 +1,6 @@
-use sealmesh_proto::SecretToken;
+use std::net::SocketAddr;
+
+use sealmesh_proto::{MachineName, SecretToken};
 use sealmesh_wire::{HostId, RepoSlug};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -105,6 +107,49 @@ pub trait Directory: Send + Sync {
         _repo: &RepoSlug,
     ) -> impl Future<Output = Result<Vec<PullSummary>, PullsUnverifiable>> + Send {
         async { Err(PullsUnverifiable) }
+    }
+
+    /// Who is on the other end of a connection, when the network says so
+    /// rather than the token: otw mode asks Tailscale about `peer`.
+    ///
+    /// `None` (the default) means this directory identifies callers by their
+    /// token, and [`authenticate_peer`] falls through to [`authenticate`]
+    /// unchanged. `Some(Err(..))` is a refusal, and fails closed: a directory
+    /// that identifies by peer never falls back to the token.
+    fn peer_identity(
+        &self,
+        _peer: Option<SocketAddr>,
+    ) -> impl Future<Output = Option<Result<PeerIdentity, Denied>>> + Send {
+        async { None }
+    }
+}
+
+/// Who a handshake proved the caller is: the host (the person), and, when the
+/// router knows it, which of their machines — so the router names the machine
+/// rather than taking the daemon's word for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerIdentity {
+    pub host: HostId,
+    pub machine: Option<MachineName>,
+}
+
+/// [`authenticate`], for a directory that may identify the caller by the
+/// connection's peer address instead of its token. A directory that does not
+/// ([`Directory::peer_identity`] is `None`) goes through [`authenticate`]
+/// exactly as before, and the peer is not looked at.
+pub async fn authenticate_peer<D: Directory>(
+    directory: &D,
+    token: &SecretToken,
+    peer: Option<SocketAddr>,
+) -> Result<PeerIdentity, Denied> {
+    match directory.peer_identity(peer).await {
+        Some(identity) => identity,
+        None => authenticate(directory, token)
+            .await
+            .map(|host| PeerIdentity {
+                host,
+                machine: None,
+            }),
     }
 }
 

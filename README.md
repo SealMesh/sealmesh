@@ -238,7 +238,9 @@ chosen with `[mesh] mode` in the config:
   is your OS user, and local agents (Claude, or a non-coding bot) talk through
   a Unix socket. No GitHub, no `[server]`, and `[allow]` may be empty.
 - **`otw`**: the router runs on one of your machines and the others reach it
-  over Tailscale, which says who each one is.
+  over Tailscale, which says who each one is: no tokens, identity from
+  Tailscale `whois`, bound only to the tailnet, and closed whenever Tailscale
+  can't answer. Set up in [docs/otw.md](docs/otw.md).
 - **`cloud`**: today's behavior. A config with no `[mesh]` is cloud, so
   nothing changes for existing installs, and v0.1.0 daemons keep working
   against a cloud router. [docs/cloud.md](docs/cloud.md) runs that router in
@@ -246,8 +248,9 @@ chosen with `[mesh] mode` in the config:
 
 `std` and `otw` can also have named rooms (`[[room]] name = "ops" members =
 [...]`) that only their members may join. This release adds the config, the
-per-mode credential and the router-side seams; `std` and `otw` themselves land
-next. See "Modes" in [docs/install.md](docs/install.md).
+per-mode credential and the router-side seams; `otw` is ready
+([docs/otw.md](docs/otw.md)) and `std` lands next. See "Modes" in
+[docs/install.md](docs/install.md).
 
 ## One worktree per agent
 

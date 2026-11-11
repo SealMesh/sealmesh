@@ -6,6 +6,8 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
+use sealmesh_proto::tailnet::{is_magic_dns_name, is_tailnet_ip};
+
 use crate::{paths::config_home, wire::RepoSlug};
 
 const PROJECT_CONFIG: &str = "sealmesh.local.toml";
@@ -250,6 +252,51 @@ impl ServerConfig {
         };
         Ok(format!("{socket}/v1/connect"))
     }
+
+    /// [`Self::connect_url`] for otw mode, where the router is on the
+    /// tailnet: `http://` is fine there (WireGuard encrypts the hop, and the
+    /// handshake carries no credential), but the host must be a tailnet
+    /// address or a MagicDNS name. A LAN, loopback or public IP is refused:
+    /// the router would not be reached over WireGuard, and could not tell
+    /// who this machine is.
+    ///
+    /// The second value is a warning for a MagicDNS name, which resolves
+    /// only while MagicDNS is on and could name something else off the
+    /// tailnet. The tailnet IP is the firmer pin.
+    pub fn otw_connect_url(&self) -> Result<(String, Option<String>)> {
+        let base = self.url.trim_end_matches('/');
+        let parsed = url::Url::parse(base).with_context(|| {
+            format!(
+                "server.url {base:?} is not a URL. In otw mode it is \
+                 http://<tailnet address>:<port>"
+            )
+        })?;
+        let scheme = match parsed.scheme() {
+            "http" => "ws",
+            "https" => "wss",
+            _ => bail!("server.url must start with http:// or https://"),
+        };
+        let warning = match parsed.host() {
+            Some(url::Host::Ipv4(ip)) if is_tailnet_ip(ip.into()) => None,
+            Some(url::Host::Ipv6(ip)) if is_tailnet_ip(ip.into()) => None,
+            Some(url::Host::Domain(name)) if is_magic_dns_name(name) => Some(format!(
+                "server.url names {name}, a MagicDNS name: it resolves only while MagicDNS is \
+                 on, so pinning the router's tailnet IP (`tailscale ip -4` on it) is firmer"
+            )),
+            Some(host) => bail!(
+                "server.url names {host}, which is not on a tailnet. In otw mode the router is \
+                 reached over Tailscale: use its tailnet IP (100.64.0.0/10 or \
+                 fd7a:115c:a1e0::/48) or its MagicDNS name (<machine> or \
+                 <machine>.<tailnet>.ts.net)"
+            ),
+            None => bail!("server.url {base:?} has no host"),
+        };
+        let rest = base
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or_default();
+        Ok((format!("{scheme}://{rest}/v1/connect"), warning))
+    }
 }
 
 fn is_loopback(url: &str) -> bool {
@@ -325,8 +372,7 @@ impl Config {
             }
         }
         if mode.has_remote_router() {
-            // TODO(otw): check that an otw url names a tailnet host.
-            self.server()?.connect_url()?;
+            self.router_url()?;
         }
         self.validate_rooms()?;
         crate::collect::generic::validate(&self.provider)?;
@@ -353,6 +399,31 @@ impl Config {
         self.server.as_ref().ok_or_else(|| {
             anyhow!("mode = \"{mode}\" reaches a router elsewhere, so [server] url is required")
         })
+    }
+
+    /// The WebSocket URL of the remote router, checked the way this mode
+    /// needs: cloud refuses plaintext off this machine, otw refuses a host
+    /// that is not on the tailnet. An error in std mode, as [`Self::server`].
+    pub fn router_url(&self) -> Result<String> {
+        match self.mode() {
+            Mode::Otw => Ok(self.server()?.otw_connect_url()?.0),
+            Mode::Std | Mode::Cloud => self.server()?.connect_url(),
+        }
+    }
+
+    /// Things about the config that work but deserve a second look, for
+    /// `sealmesh doctor`. Never printed on load: every command loads the
+    /// config, and the hook's stderr is not the place for them.
+    pub fn warnings(&self) -> Vec<String> {
+        if self.mode() != Mode::Otw {
+            return Vec::new();
+        }
+        self.server
+            .as_ref()
+            .and_then(|server| server.otw_connect_url().ok())
+            .and_then(|(_, warning)| warning)
+            .into_iter()
+            .collect()
     }
 
     /// Where this machine's handshake credential comes from, by mode.
@@ -988,6 +1059,83 @@ mod tests {
         assert!(ignored.server().is_err());
     }
 
+    fn otw_config(url: &str) -> Result<Config> {
+        let config: Config = toml::from_str(&format!(
+            "[mesh]\nmode = \"otw\"\n[server]\nurl = \"{url}\"\n\
+             [allow]\nrepos = [\"o/r\"]\npaths = [\"/tmp\"]"
+        ))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    #[test]
+    fn otw_reaches_its_router_by_tailnet_ip_in_plaintext() {
+        for (url, socket) in [
+            (
+                "http://100.101.102.103:8787",
+                "ws://100.101.102.103:8787/v1/connect",
+            ),
+            ("http://100.64.0.1:8787/", "ws://100.64.0.1:8787/v1/connect"),
+            (
+                "http://[fd7a:115c:a1e0::5]:8787",
+                "ws://[fd7a:115c:a1e0::5]:8787/v1/connect",
+            ),
+            (
+                "https://100.101.102.103",
+                "wss://100.101.102.103/v1/connect",
+            ),
+        ] {
+            let config = otw_config(url).unwrap();
+            assert_eq!(config.router_url().unwrap(), socket, "{url}");
+            assert!(config.warnings().is_empty(), "{url}");
+        }
+    }
+
+    #[test]
+    fn otw_warns_on_a_magic_dns_name_but_accepts_it() {
+        for url in ["http://router:8787", "https://router.tail1234.ts.net"] {
+            let config = otw_config(url).unwrap();
+            assert!(config.router_url().is_ok(), "{url}");
+            let warnings = config.warnings();
+            assert_eq!(warnings.len(), 1, "{url}");
+            assert!(
+                warnings.iter().all(|w| w.contains("MagicDNS")),
+                "{warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn otw_refuses_a_router_url_off_the_tailnet() {
+        for url in [
+            "http://203.0.113.7:8787",
+            "https://8.8.8.8",
+            "http://192.168.1.20:8787",
+            "http://127.0.0.1:8787",
+            "http://[2001:db8::1]:8787",
+            "https://router.example.com",
+            "ftp://100.101.102.103",
+        ] {
+            let refused = otw_config(url);
+            assert!(refused.is_err(), "accepted {url}");
+        }
+        let message = format!("{:#}", otw_config("http://203.0.113.7:8787").unwrap_err());
+        assert!(message.contains("not on a tailnet"), "{message}");
+    }
+
+    #[test]
+    fn cloud_keeps_its_own_url_rules() {
+        // A tailnet IP over http is still plaintext off this machine in cloud
+        // mode, where the handshake carries a GitHub token.
+        let config: Config = toml::from_str(
+            "[server]\nurl = \"http://100.101.102.103:8787\"\n\
+             [allow]\nrepos = [\"o/r\"]\npaths = [\"/tmp\"]",
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+        assert!(config_with("").unwrap().warnings().is_empty());
+    }
+
     #[test]
     fn otw_still_needs_its_router_url() {
         let config: Config = toml::from_str(
@@ -995,7 +1143,7 @@ mod tests {
         )
         .unwrap();
         assert!(config.validate().is_err());
-        let config = config_with("[mesh]\nmode = \"otw\"").unwrap();
+        let config = otw_config("http://100.101.102.103:8787").unwrap();
         assert_eq!(config.mode(), Mode::Otw);
         assert_eq!(
             config.credential_source().unwrap(),
@@ -1019,7 +1167,12 @@ mod tests {
         let ops = config.rooms.first().unwrap();
         assert_eq!(ops.name.as_str(), "ops");
         assert_eq!(ops.members.len(), 2);
-        let otw = config_with(&format!("[mesh]\nmode = \"otw\"\n{OPS}")).unwrap();
+        let otw: Config = toml::from_str(&format!(
+            "[mesh]\nmode = \"otw\"\n[server]\nurl = \"http://100.101.102.103:8787\"\n\
+             [allow]\nrepos = [\"o/r\"]\npaths = [\"/tmp\"]\n{OPS}"
+        ))
+        .unwrap();
+        otw.validate().unwrap();
         assert_eq!(otw.rooms.len(), 1);
     }
 

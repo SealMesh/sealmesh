@@ -18,6 +18,7 @@ pub mod room_budget;
 pub mod room_reads;
 pub mod rooms;
 pub mod serve;
+pub mod tailscale;
 pub mod turn_cap;
 
 pub use serve::{Listener, run};

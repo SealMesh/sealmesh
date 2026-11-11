@@ -13,6 +13,16 @@ use crate::{
 pub async fn run(config: &Config) -> Result<()> {
     println!("mode              {}", mode_line(config));
     println!("router            {}", router_line(config)?);
+    if config.mode() == Mode::Otw {
+        let socket = sealmesh_proto::tailnet::default_tailscaled_socket();
+        println!(
+            "tailscaled        {}",
+            tailscaled_line(&socket, localapi_status(&socket))
+        );
+    }
+    for warning in config.warnings() {
+        println!("warning           {warning}");
+    }
     println!("integration       origin/{}", config.integration_branch);
     println!("ticket rooms      {}", ticket_rooms_line(config));
     println!("host              {}", host_line(config.mode()));
@@ -177,9 +187,67 @@ fn mode_line(config: &Config) -> String {
 
 fn router_line(config: &Config) -> Result<String> {
     if config.mode().has_remote_router() {
-        config.server()?.connect_url()
+        config.router_url()
     } else {
         Ok("embedded (std mode runs the router inside `sealmesh daemon`)".to_owned())
+    }
+}
+
+/// How long `doctor` waits on the local tailscaled.
+const TAILSCALED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Asks the local tailscaled's LocalAPI for its status, and says whether it
+/// answered 200. Only `doctor` calls it: the daemon itself never needs the
+/// local tailscaled, only to be on the tailnet.
+#[cfg(unix)]
+fn localapi_status(socket: &std::path::Path) -> Result<(), String> {
+    use std::io::{Read as _, Write as _};
+
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(socket).map_err(|error| error.to_string())?;
+    stream
+        .set_read_timeout(Some(TAILSCALED_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(TAILSCALED_TIMEOUT)))
+        .map_err(|error| error.to_string())?;
+    stream
+        .write_all(
+            b"GET /localapi/v0/status?peers=false HTTP/1.0\r\n\
+              Host: local-tailscaled.sock\r\n\r\n",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut head = [0_u8; 64];
+    let read = stream.read(&mut head).map_err(|error| error.to_string())?;
+    let line = String::from_utf8_lossy(head.get(..read).unwrap_or_default()).into_owned();
+    let status = line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned();
+    if status == "200" {
+        Ok(())
+    } else {
+        Err(format!(
+            "answered {:?}",
+            line.lines().next().unwrap_or_default()
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+fn localapi_status(_socket: &std::path::Path) -> Result<(), String> {
+    Err("not checked on this platform".to_owned())
+}
+
+/// The `doctor` tailscaled line, from [`localapi_status`]'s answer.
+fn tailscaled_line(socket: &std::path::Path, status: Result<(), String>) -> String {
+    match status {
+        Ok(()) => format!("answers at {}", socket.display()),
+        Err(error) => format!(
+            "no answer at {} ({error}). The otw router's machine needs tailscaled's LocalAPI \
+             to identify peers; this machine only needs to be on the tailnet. The macOS app \
+             serves LocalAPI elsewhere, so check `tailscale status` there",
+            socket.display()
+        ),
     }
 }
 
@@ -526,5 +594,44 @@ mod tests {
         let on = config_with_chat(true);
         assert_ne!(chat_status_line(&on, true), "enabled");
         assert!(!on.chat_enabled(true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_tailscaled_line_says_whether_localapi_answered() {
+        use std::io::{Read as _, Write as _};
+
+        let dir = std::env::temp_dir().join(format!("smdoc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("ts.sock");
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for answer in [
+                "HTTP/1.0 200 OK\r\n\r\n{}",
+                "HTTP/1.0 403 Forbidden\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 256];
+                let read = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(request.get(..read).unwrap()).into_owned();
+                assert!(request.starts_with("GET /localapi/v0/status"), "{request}");
+                assert!(request.contains("Host: local-tailscaled.sock"), "{request}");
+                stream.write_all(answer.as_bytes()).unwrap();
+            }
+        });
+
+        assert_eq!(localapi_status(&socket), Ok(()));
+        assert!(tailscaled_line(&socket, localapi_status(&socket)).contains("no answer"));
+        server.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        let missing = dir.join("absent.sock");
+        let line = tailscaled_line(&missing, localapi_status(&missing));
+        assert!(line.starts_with("no answer at"), "{line}");
+        assert!(
+            tailscaled_line(&missing, Ok(())).starts_with("answers at"),
+            "{line}"
+        );
     }
 }
