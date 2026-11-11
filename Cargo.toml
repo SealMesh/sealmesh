@@ -64,7 +64,7 @@ octocrab = { version = "0.54.1", default-features = false, features = [
 rand = "0.9.2"
 # Room history for a self-hosted router: one file, no service to run. `bundled`
 # compiles SQLite in, so the router has no system library to match.
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
