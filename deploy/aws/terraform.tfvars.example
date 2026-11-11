@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is yours: don't
+# commit it if your org name or repo list is private.
+
+region         = "us-east-1"
+router_version = "0.2.0" # a released version that publishes the -dynamodb image
+
+vpc_id          = "vpc-0123456789abcdef0"
+alb_subnet_ids  = ["subnet-aaaa", "subnet-bbbb"] # public, two AZs
+task_subnet_ids = ["subnet-cccc", "subnet-dddd"] # private with NAT, or public + assign_public_ip
+# assign_public_ip = true
+
+domain_name     = "router.example.com"
+route53_zone_id = "Z0123456789ABCDEFGHIJ" # or set certificate_arn and leave this out
+# certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+
+github_org = "example-org"
+projects = [
+  { id = "example", repos = ["example-org/example-repo", "example-org/other-repo"] },
+]
+
+# extra_environment = { SEALMESH_ROOM_TURN_CAP = "40" }

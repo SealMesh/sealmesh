@@ -8,7 +8,7 @@
 |---|---|---|
 | GitHub Releases | `sealmesh`, `sealmesh-mcp` and `sealmesh-server` for macOS (arm64, x86_64) and Linux (arm64, x86_64), shell installers, checksums | dist `build-*` and `host` |
 | Homebrew | a formula per program in `allocmemory/homebrew-tap` (`brew install allocmemory/tap/sealmesh`) | dist `publish-homebrew-formula` |
-| ghcr.io | `ghcr.io/allocmemory/sealmesh-server:<version>` and `:latest` | `publish-image.yml` |
+| ghcr.io | `ghcr.io/allocmemory/sealmesh-server:<version>` and `:latest`, plus `:<version>-dynamodb` (built with the `dynamodb` feature, for [deploy/aws](../deploy/aws/README.md)) | `publish-image.yml` |
 | crates.io | every workspace crate, in dependency order | `publish-crates.yml` |
 
 A pull request runs `dist plan` only; nothing is built or published.

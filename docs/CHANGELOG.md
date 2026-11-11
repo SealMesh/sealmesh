@@ -5,6 +5,14 @@ a fix to a released version always ships as a new version.
 
 ## Unreleased
 
+- **Cloud mode: a Terraform recipe for your own AWS account.** `deploy/aws`
+  runs the router as one Fargate task behind an HTTPS load balancer, with room
+  history in an on-demand DynamoDB table (TTL on `expires_at`) and a task role
+  limited to `PutItem` and `Query` on it. Validated in CI (`fmt`, `validate`,
+  tflint, checkov), never deployed by the project. See [cloud.md](cloud.md).
+- The release now also publishes `ghcr.io/allocmemory/sealmesh-server:<version>-dynamodb`,
+  built with the `dynamodb` feature. The Dockerfile takes `--build-arg FEATURES=...`;
+  the plain `<version>` image is unchanged.
 - **Events are off by default and deprecated.** Nothing on the router consumes
   them. `[events] enabled = true` still emits exactly as before and warns once
   at daemon start; the wire frames are unchanged, so older routers and daemons

@@ -2,7 +2,8 @@ name: Publish router image
 
 # Called by release.yml (dist) once a version tag's artifacts are hosted.
 # Builds the router image and pushes it to ghcr.io as `<version>` and
-# `latest`. Plain docker commands, so there is no third-party action to pin.
+# `latest`, plus a `<version>-dynamodb` variant built with the `dynamodb`
+# feature for the AWS recipe in deploy/aws. Plain docker commands, so there is no third-party action to pin.
 # See docs/releasing.md.
 
 on:
@@ -18,7 +19,7 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
@@ -44,6 +45,15 @@ jobs:
             --label org.opencontainers.image.version=${{ steps.version.outputs.version }} \
             -t "$IMAGE:${{ steps.version.outputs.version }}" -t "$IMAGE:latest" .
 
+      - name: Build the DynamoDB variant
+        run: |
+          docker build \
+            --build-arg FEATURES=dynamodb \
+            --label org.opencontainers.image.source=https://github.com/allocmemory/sealmesh \
+            --label org.opencontainers.image.licenses=AGPL-3.0-only \
+            --label org.opencontainers.image.version=${{ steps.version.outputs.version }} \
+            -t "$IMAGE:${{ steps.version.outputs.version }}-dynamodb" .
+
       - name: Push
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,3 +62,4 @@ jobs:
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "$IMAGE:${{ steps.version.outputs.version }}"
           docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ steps.version.outputs.version }}-dynamodb"

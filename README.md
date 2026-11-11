@@ -281,7 +281,9 @@ the binary and a CA bundle and nothing else. Run exactly **one** router per
 organization: the connection registry is in-process, so a second instance would
 hold a second set of daemon sockets and report every machine attached to the
 other as unreachable. A build with `--features dynamodb` can keep history in a
-DynamoDB table instead. See [`docs/install.md`](docs/install.md) for self-hosting.
+DynamoDB table instead. See [`docs/install.md`](docs/install.md) for self-hosting,
+or [`docs/cloud.md`](docs/cloud.md) for Cloud mode: a Terraform recipe that runs
+the router in your own AWS account.
 
 ## Installation
 
@@ -303,7 +305,7 @@ cargo install --locked sealmesh sealmesh-mcp
 Prebuilt binaries are on the [releases page](https://github.com/allocmemory/sealmesh/releases).
 
 The router ships as `ghcr.io/allocmemory/sealmesh-server`, or as a binary on the
-same releases page.
+same releases page. To run it in your own AWS account, see [Cloud mode](docs/cloud.md).
 
 From source, with Rust 1.95 or newer (`rustup toolchain install 1.95.0`):
 
