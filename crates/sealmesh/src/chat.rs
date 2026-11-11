@@ -5,7 +5,7 @@
 //! separate decision, out of scope for this command by design.
 //!
 //! This talks to the *daemon's local socket* (`room::connect`), never the
-//! router directly — the daemon already holds the one connection per host
+//! router directly — the daemon already holds this machine's one connection
 //! that room frames travel over, and joining, backfilling and
 //! tailing all reuse the same request types the hook and the MCP room tools
 //! use (`room::local`).

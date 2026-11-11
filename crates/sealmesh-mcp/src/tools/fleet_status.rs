@@ -50,9 +50,9 @@ use sealmesh::{
     config::Config,
     daemon::QUERY_REFILL,
     progress::Phase,
-    who::{self, Answers, HostReport},
+    who::{self, Answers, HostReport, Row},
 };
-use sealmesh_proto::ProjectEntry;
+use sealmesh_proto::{MachineName, ProjectEntry};
 use sealmesh_wire::{HostId, Snapshot};
 use serde::{Deserialize, Serialize};
 
@@ -111,7 +111,8 @@ pub struct FleetStatus {
     /// named, so they cannot be rows, and dropping the count would make a
     /// short answer look complete.
     pub undecodable: usize,
-    /// One entry per machine, in the order the router reported them.
+    /// One entry per machine, in the order the router reported them. A host
+    /// with several machines connected has one entry for each.
     pub hosts: Vec<HostEntry>,
     /// The repo→project mapping, already filtered by the router to repos this
     /// login can read. Empty when the router has none.
@@ -120,24 +121,47 @@ pub struct FleetStatus {
 
 /// One machine. `state` keeps apart the cases that must not collapse: a
 /// closed laptop is not a deliberate opt-out, and neither is a refused answer.
+///
+/// `machine` is which of the host's machines this is. It is left out when the
+/// router did not say — a router or daemon built before machine names, or a
+/// host with nothing connected — so such an entry is exactly what it was
+/// before machines were named.
 #[derive(Debug, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HostEntry {
     /// It answered, and the answer is its own.
     Answering {
         host: HostId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        machine: Option<MachineName>,
         snapshot: Box<Snapshot>,
     },
     /// Connected, and its owner has turned sharing off.
-    NotSharing { host: HostId },
+    NotSharing {
+        host: HostId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        machine: Option<MachineName>,
+    },
     /// No daemon attached, or it did not answer in time.
-    Unreachable { host: HostId },
+    Unreachable {
+        host: HostId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        machine: Option<MachineName>,
+    },
     /// Connected and sharing, but it refused this query because it has been
     /// asked too often. Not a closed laptop: it will answer again shortly.
-    Throttled { host: HostId },
+    Throttled {
+        host: HostId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        machine: Option<MachineName>,
+    },
     /// It answered, and the answer was refused — today, because it claimed to
     /// be a different machine from the one the router attributed it to.
-    Unreadable { host: HostId },
+    Unreadable {
+        host: HostId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        machine: Option<MachineName>,
+    },
 }
 
 /// Why a call produced no fleet. A category, never a message: the underlying
@@ -169,8 +193,9 @@ impl McpTool for FleetStatusTool {
     const NAME: &'static str = "fleet_status";
     const DESCRIPTION: &'static str = "Every machine attached to the sealmesh router and the coding \
          agents running on each, as `sealmesh who` shows them, limited to repos your GitHub login \
-         can read. Each host's `state` is answering, not_sharing, unreachable, throttled or \
-         unreadable. A throttled machine is up but refused because it was asked too often. \
+         can read. A host with several machines connected is listed once per machine, each \
+         with its `machine` name when the router knows it. Each entry's `state` is answering, \
+         not_sharing, unreachable, throttled or unreadable. A throttled machine is up but refused because it was asked too often. \
          `partial` is true when the router left out work you cannot read. Takes no arguments. \
          Calls less than 30 seconds apart fail with the error rate_limited and are not sent. \
          An answer too large to send fails with output_too_large.";
@@ -287,8 +312,8 @@ impl From<Answers> for FleetStatus {
             partial,
         } = answers;
         let mut hosts = Vec::with_capacity(reports.len());
-        for report in reports {
-            match HostEntry::from_report(report) {
+        for Row { machine, report } in reports {
+            match HostEntry::from_report(report, machine) {
                 Some(entry) => hosts.push(entry),
                 // `who` holds a non-answering host as the string of a `HostId`
                 // it already validated, so this does not happen. If it ever
@@ -306,20 +331,33 @@ impl From<Answers> for FleetStatus {
 }
 
 impl HostEntry {
-    fn from_report(report: HostReport) -> Option<Self> {
+    fn from_report(report: HostReport, machine: Option<MachineName>) -> Option<Self> {
         let host = |name: &str| HostId::try_from(name).ok();
         Some(match report {
             HostReport::Answering(snapshot) => Self::Answering {
                 host: snapshot.host.clone(),
+                machine,
                 snapshot,
             },
-            HostReport::NotSharing { host: name } => Self::NotSharing { host: host(&name)? },
-            HostReport::Unreachable { host: name } => Self::Unreachable { host: host(&name)? },
-            HostReport::Throttled { host: name } => Self::Throttled { host: host(&name)? },
+            HostReport::NotSharing { host: name } => Self::NotSharing {
+                host: host(&name)?,
+                machine,
+            },
+            HostReport::Unreachable { host: name } => Self::Unreachable {
+                host: host(&name)?,
+                machine,
+            },
+            HostReport::Throttled { host: name } => Self::Throttled {
+                host: host(&name)?,
+                machine,
+            },
             HostReport::Unreadable {
                 host: name,
                 reason: _,
-            } => Self::Unreadable { host: host(&name)? },
+            } => Self::Unreadable {
+                host: host(&name)?,
+                machine,
+            },
         })
     }
 }
@@ -487,6 +525,61 @@ mod tests {
         );
     }
 
+    /// A router that knows machine names: it answers the `AskMachines` with
+    /// `frames`, then the `Projects` request sent behind it.
+    async fn machine_router(frames: Vec<ServerFrame>) -> Socket {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let send =
+                |frame: &ServerFrame| Message::Text(serde_json::to_string(frame).unwrap().into());
+            let _ = ws.next().await;
+            for frame in &frames {
+                ws.send(send(frame)).await.unwrap();
+            }
+            let _ = ws.next().await;
+            ws.send(send(&ServerFrame::Projects { projects: vec![] }))
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let (socket, _response) = connect_async_with_config(format!("ws://{addr}"), None, false)
+            .await
+            .unwrap();
+        socket
+    }
+
+    #[tokio::test]
+    async fn each_of_one_hosts_machines_is_its_own_entry_with_its_name() {
+        let on = |name: Option<&str>, state: HostState| ServerFrame::MachineReport {
+            id: QueryId(1),
+            host: host("sandbank"),
+            machine: name.map(|n| MachineName::try_from(n).unwrap()),
+            state,
+        };
+        let socket = machine_router(vec![
+            on(Some("laptop"), HostState::NotSharing {}),
+            on(Some("desktop"), HostState::Unreachable {}),
+            // A daemon from before machine names: no `machine` key at all.
+            on(None, HostState::NotSharing {}),
+            ServerFrame::Complete { id: QueryId(1) },
+        ])
+        .await;
+
+        let status = to_json(&query(socket).await.unwrap());
+        assert_eq!(
+            status["hosts"],
+            json!([
+                { "state": "not_sharing", "host": "sandbank", "machine": "laptop" },
+                { "state": "unreachable", "host": "sandbank", "machine": "desktop" },
+                { "state": "not_sharing", "host": "sandbank" }
+            ]),
+            "{status}"
+        );
+    }
+
     #[tokio::test]
     async fn a_partial_frame_is_a_field_so_a_narrowed_answer_is_not_an_empty_fleet() {
         // A machine whose every agent was withheld looks idle, exactly like a
@@ -635,19 +728,24 @@ mod tests {
         for entry in [
             HostEntry::Answering {
                 host: host("sandbank"),
+                machine: None,
                 snapshot: snapshot("sandbank"),
             },
             HostEntry::NotSharing {
                 host: host("sandbank"),
+                machine: None,
             },
             HostEntry::Unreachable {
                 host: host("sandbank"),
+                machine: None,
             },
             HostEntry::Throttled {
                 host: host("sandbank"),
+                machine: None,
             },
             HostEntry::Unreadable {
                 host: host("sandbank"),
+                machine: None,
             },
         ] {
             let state = named(&entry);
@@ -860,6 +958,7 @@ mod tests {
             hosts: (0..MAX_HOSTS)
                 .map(|n| HostEntry::Unreachable {
                     host: host(&format!("host-{n}")),
+                    machine: Some(MachineName::try_from("work-laptop").unwrap()),
                 })
                 .collect(),
             projects: vec![],

@@ -312,11 +312,11 @@ struct PostRate {
 /// Every host's post rate, across all its rooms and connections.
 ///
 /// Keyed by the host the credential resolved to, not by the connection. A
-/// host holds one daemon connection at a time (the registry replaces the
-/// older one), so the gap a per-connection rate left was reconnecting: each
-/// new connection started with a full burst. Held for the life of the router
-/// process, so a reconnect inherits the host's rate, including whether its
-/// refusals were already logged.
+/// host may hold one daemon connection per machine, and a per-connection rate
+/// would hand each one — and each reconnect — a fresh burst. So the rate is
+/// the person's, shared by every machine they post from. Held for the life of
+/// the router process, so a reconnect inherits the host's rate, including
+/// whether its refusals were already logged.
 #[derive(Debug)]
 pub struct PostRates {
     burst: u64,

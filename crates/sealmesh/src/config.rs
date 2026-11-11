@@ -21,6 +21,12 @@ pub struct Config {
     /// are off and checkouts resolve to their repo room alone.
     #[serde(default)]
     pub ticket_prefixes: Vec<String>,
+    /// Which of your machines this one is, as `sealmesh who` shows it beside
+    /// your login. Optional: the OS hostname is used without it. Two machines
+    /// signed in as the same person must not share one, or each reconnect of
+    /// one takes the other's place at the router.
+    #[serde(default)]
+    pub machine: Option<sealmesh_proto::MachineName>,
     pub server: ServerConfig,
     pub allow: AllowConfig,
     #[serde(default)]
@@ -256,6 +262,17 @@ impl Config {
         }
     }
 
+    /// The machine name this daemon tells the router: `machine` from the
+    /// config, else the OS hostname folded into one (see
+    /// [`MachineName::from_hostname`](sealmesh_proto::MachineName::from_hostname)).
+    /// `None` only when neither gives one.
+    pub fn machine_name(&self) -> Option<sealmesh_proto::MachineName> {
+        self.machine.clone().or_else(|| {
+            sysinfo::System::host_name()
+                .and_then(|hostname| sealmesh_proto::MachineName::from_hostname(&hostname))
+        })
+    }
+
     pub fn off_switch_path() -> Option<PathBuf> {
         config_home().map(|d| d.join("sealmesh/off"))
     }
@@ -344,6 +361,35 @@ mod tests {
                 .into_iter()
                 .collect(),
         )
+    }
+
+    fn with_machine(line: &str) -> Result<Config, toml::de::Error> {
+        toml::from_str(&format!(
+            r#"
+            ticket_prefixes = ["ENG"]
+            {line}
+            [server]
+            url = "https://router.example.com"
+            [allow]
+            repos = ["example-org/example-repo"]
+            paths = ["/tmp"]
+            "#
+        ))
+    }
+
+    #[test]
+    fn a_configured_machine_name_wins_and_a_bad_one_is_refused() {
+        let named = with_machine(r#"machine = "work-laptop""#).unwrap();
+        assert_eq!(
+            named.machine_name().unwrap().as_str(),
+            "work-laptop",
+            "the config's name, not the hostname"
+        );
+        // Not folded the way a hostname is: a name someone typed and got
+        // wrong is a startup error, not a quietly different name.
+        assert!(with_machine(r#"machine = "Work Laptop""#).is_err());
+        assert!(with_machine(r#"machine = """#).is_err());
+        assert!(with_machine("").unwrap().machine.is_none());
     }
 
     #[test]

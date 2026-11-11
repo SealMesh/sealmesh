@@ -113,6 +113,16 @@ you are holding, plus the cost it carries:
 Do not assume a login has a shape. `host_from_login` normalises rather than
 parses, because GitHub controls that format and could widen it.
 
+**The machine name is a label under the host, never an identity.** One person
+can run a daemon on several machines, all resolving to the same host, and each
+says which machine it is (`ClientFrame::Machine`). That is the one thing a
+daemon says about itself, so it is held to what a label can do: it is shown
+beside the credential's host and never instead of it, it decides only which of
+that same host's connections a reconnect replaces, it is set once per
+connection, and no limit is keyed by it — post rate, token allowance and turn
+cap stay the host's. A daemon that lies about its machine can only displace
+another connection of its own login.
+
 **The thing to revisit is the token scope:** `gh` hands over whatever the
 person authorised, where a GitHub App device flow would issue one scoped to what
 the App may do.

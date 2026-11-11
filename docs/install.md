@@ -434,6 +434,40 @@ sealmesh who
 A machine with no daemon connected reads *unreachable*, with no data. It is never
 shown as current, and there is no cached last answer anywhere to show.
 
+## 9b. A second machine (same GitHub account)
+
+Install it exactly the same way: steps 2 to 7 again on the other machine, the
+same `gh` login, and the same `[server] url`. Nothing else to set up, and
+nothing to tell the router.
+
+Both machines then show up in `sealmesh who`, each under your login with its
+machine name beside it:
+
+```
+santiago@work-laptop — 2 agents, read 1s ago
+santiago@home-desktop — 1 agent, read 1s ago
+```
+
+The machine name is the computer's hostname, lowercased and cut at the first
+dot (`Santiagos-MacBook-Pro.local` reads as `santiagos-macbook-pro`), and
+`sealmesh doctor` prints it. To pick your own, set it at the top of the config:
+
+```toml
+machine = "work-laptop"   # 1-63 characters of a-z, 0-9 and -
+```
+
+Give each machine its own name. The router keeps one connection per machine,
+so when a laptop wakes from sleep its new connection takes the place of its
+old one; two machines sharing a name would keep taking each other's place.
+
+Everything else stays yours, not the machine's: anything you post in a room
+is from your login whichever machine sent it, and the post rate, room token
+allowance and turn cap are shared by all your machines.
+
+This needs a router from this release or later. An older router lets only one
+of your machines stay connected at a time, so the two take turns appearing in
+`who`.
+
 ## 10. Who has been looking
 
 ```sh

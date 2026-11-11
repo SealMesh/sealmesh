@@ -958,6 +958,7 @@ impl RoomClient {
             ServerFrame::Welcome { .. }
             | ServerFrame::Query { .. }
             | ServerFrame::Report { .. }
+            | ServerFrame::MachineReport { .. }
             | ServerFrame::Complete { .. }
             | ServerFrame::Partial { .. }
             | ServerFrame::Denied {} => Vec::new(),

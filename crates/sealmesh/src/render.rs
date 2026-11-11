@@ -53,12 +53,24 @@ fn is_format_char(c: char) -> bool {
     sealmesh_chat_wire::is_hidden(c)
 }
 
+/// One row. `Answering` carries the machine it came from, when the router
+/// said; every other row's `host` is already its label (see [`host_label`]).
 pub enum HostStatus<'a> {
-    Answering(&'a Snapshot),
+    Answering(&'a Snapshot, Option<&'a str>),
     NotSharing { host: String },
     Unreachable { host: String },
     Throttled { host: String },
     Unreadable { host: String, reason: String },
+}
+
+/// How a row names its machine: `host@machine`, or the bare host when no
+/// machine is known — a router or daemon built before machine names, or a
+/// host with nothing connected.
+pub fn host_label(host: &str, machine: Option<&str>) -> String {
+    match machine {
+        Some(machine) => format!("{host}@{machine}"),
+        None => host.to_owned(),
+    }
 }
 
 /// One host's agents that belong in a given section: the host's name, the
@@ -100,19 +112,16 @@ pub fn render(
     let mut not_answering: Vec<&HostStatus<'_>> = Vec::new();
 
     for host in hosts {
-        let HostStatus::Answering(snapshot) = host else {
+        let HostStatus::Answering(snapshot, machine) = host else {
             not_answering.push(host);
             continue;
         };
+        let label = host_label(snapshot.host.as_str(), *machine);
         if snapshot.agents.is_empty() {
             // No agents means no repo, which trivially places this host in no
             // project — the same "nothing to group by" reason a repo outside
             // the mapping lands here.
-            ungrouped.push((
-                snapshot.host.as_str().to_owned(),
-                Vec::new(),
-                snapshot.collected_at,
-            ));
+            ungrouped.push((label, Vec::new(), snapshot.collected_at));
             continue;
         }
         let mut by_project: BTreeMap<Option<ProjectId>, Vec<&Agent>> = BTreeMap::new();
@@ -123,11 +132,7 @@ pub fn render(
             by_project.entry(key).or_default().push(agent);
         }
         for (key, agents) in by_project {
-            let entry = (
-                snapshot.host.as_str().to_owned(),
-                agents,
-                snapshot.collected_at,
-            );
+            let entry = (label.clone(), agents, snapshot.collected_at);
             match key {
                 Some(project) => grouped.entry(project).or_default().push(entry),
                 None => ungrouped.push(entry),
@@ -282,11 +287,11 @@ fn render_host(
                 sanitize(host, MAX_FIELD)
             );
         }
-        HostStatus::Answering(snapshot) => {
+        HostStatus::Answering(snapshot, machine) => {
             let _ = writeln!(
                 out,
                 "{} — {} {}, read {} ago",
-                sanitize(snapshot.host.as_str(), MAX_FIELD),
+                sanitize(&host_label(snapshot.host.as_str(), *machine), MAX_FIELD),
                 snapshot.agents.len(),
                 if snapshot.agents.len() == 1 {
                     "agent"
@@ -511,7 +516,7 @@ mod tests {
 
         let mut snapshot = snapshot("sandbank", "2026-08-10T19:56:51.322Z");
         snapshot.agents = vec![a, b];
-        let out = rendered(HostStatus::Answering(&snapshot));
+        let out = rendered(HostStatus::Answering(&snapshot, None));
 
         assert!(out.contains("example-org/sealmesh  main"), "{out}");
         assert!(out.contains("example-org/example-repo  main"), "{out}");
@@ -532,7 +537,7 @@ mod tests {
 
         let mut snapshot = snapshot("sandbank", "2026-08-10T19:56:51.322Z");
         snapshot.agents = vec![a];
-        let out = rendered(HostStatus::Answering(&snapshot));
+        let out = rendered(HostStatus::Answering(&snapshot, None));
 
         assert!(out.contains("someone-else/example-repo"), "{out}");
     }
@@ -554,7 +559,7 @@ mod tests {
 
             let mut snapshot = snapshot("sandbank", "2026-08-10T19:56:51.322Z");
             snapshot.agents = vec![a];
-            let out = rendered(HostStatus::Answering(&snapshot));
+            let out = rendered(HostStatus::Answering(&snapshot, None));
 
             assert!(
                 out.contains("example-org/example-repo"),
@@ -642,7 +647,7 @@ mod tests {
     fn an_answering_host_reports_when_it_read_its_own_files() {
         let snapshot = snapshot("shelter", "2026-08-10T19:56:51.322Z");
         let out = render(
-            &[HostStatus::Answering(&snapshot)],
+            &[HostStatus::Answering(&snapshot, None)],
             &[],
             &PrStatuses::new(),
             ts("2026-08-10T19:57:01.322Z"),
@@ -657,7 +662,7 @@ mod tests {
         let good = snapshot("sandbank", "2026-08-10T19:56:51.322Z");
         let out = render(
             &[
-                HostStatus::Answering(&good),
+                HostStatus::Answering(&good, None),
                 HostStatus::Unreadable {
                     host: "shelter".to_owned(),
                     reason: "snapshot declares schema 99, which this build does not read"
@@ -678,7 +683,7 @@ mod tests {
         let mut snapshot = snapshot("sandbank", "2026-08-10T19:56:51.322Z");
         snapshot.agents.first_mut().unwrap().tasks = None;
         let out = render(
-            &[HostStatus::Answering(&snapshot)],
+            &[HostStatus::Answering(&snapshot, None)],
             &[],
             &PrStatuses::new(),
             ts("2026-08-10T19:57:03.322Z"),
@@ -694,7 +699,7 @@ mod tests {
         let mut snapshot = snapshot("shelter", "2026-08-10T19:56:51.322Z");
         snapshot.agents.clear();
         let out = render(
-            &[HostStatus::Answering(&snapshot)],
+            &[HostStatus::Answering(&snapshot, None)],
             &[],
             &PrStatuses::new(),
             ts("2026-08-10T19:57:03.322Z"),
@@ -752,8 +757,8 @@ mod tests {
         )];
         let out = render(
             &[
-                HostStatus::Answering(&sandbank),
-                HostStatus::Answering(&shelter),
+                HostStatus::Answering(&sandbank, None),
+                HostStatus::Answering(&shelter, None),
             ],
             &projects,
             &PrStatuses::new(),
@@ -791,7 +796,7 @@ mod tests {
 
         let projects = [project("example-repo", &["example-org/example-repo"])];
         let out = render(
-            &[HostStatus::Answering(&snap)],
+            &[HostStatus::Answering(&snap, None)],
             &projects,
             &PrStatuses::new(),
             ts("2026-08-10T19:57:01.322Z"),
@@ -821,7 +826,7 @@ mod tests {
 
         let out = render(
             &[
-                HostStatus::Answering(&snap),
+                HostStatus::Answering(&snap, None),
                 HostStatus::NotSharing {
                     host: "shelter".to_owned(),
                 },
@@ -855,7 +860,7 @@ mod tests {
         // An empty mapping is what the reader falls back to when an old
         // router never answers `ClientFrame::Projects` at all.
         let out = render(
-            &[HostStatus::Answering(&snap)],
+            &[HostStatus::Answering(&snap, None)],
             &[],
             &PrStatuses::new(),
             ts("2026-08-10T19:57:01.322Z"),
@@ -899,7 +904,7 @@ mod tests {
 
         let projects = [project("example-repo", &["example-org/example-repo"])];
         let out = render(
-            &[HostStatus::Answering(&snap)],
+            &[HostStatus::Answering(&snap, None)],
             &projects,
             &PrStatuses::new(),
             ts("2026-08-10T19:57:01.322Z"),
@@ -925,7 +930,7 @@ mod tests {
             project("example-tools", &["example-org/example-tools"]),
         ];
         let out = render(
-            &[HostStatus::Answering(&snap)],
+            &[HostStatus::Answering(&snap, None)],
             &projects,
             &PrStatuses::new(),
             ts("2026-08-10T19:57:01.322Z"),
@@ -978,7 +983,7 @@ mod tests {
             project("example-tools", &["example-org/example-repo"]),
         ];
         let out = render(
-            &[HostStatus::Answering(&snap)],
+            &[HostStatus::Answering(&snap, None)],
             &projects,
             &PrStatuses::new(),
             ts("2026-08-10T19:57:01.322Z"),
@@ -996,7 +1001,7 @@ mod tests {
         let mut idle = snapshot("sandbank", "2026-08-10T19:56:51.322Z");
         idle.agents.clear();
         let out = render_answer(
-            &[HostStatus::Answering(&idle)],
+            &[HostStatus::Answering(&idle, None)],
             &[],
             &PrStatuses::new(),
             ts("2026-08-10T19:57:01.322Z"),
@@ -1013,7 +1018,7 @@ mod tests {
     #[test]
     fn a_complete_answer_carries_no_partial_notice() {
         let snap = snapshot("sandbank", "2026-08-10T19:56:51.322Z");
-        let hosts = [HostStatus::Answering(&snap)];
+        let hosts = [HostStatus::Answering(&snap, None)];
         let now = ts("2026-08-10T19:57:01.322Z");
         let out = render_answer(&hosts, &[], &PrStatuses::new(), now, false, false);
 
@@ -1046,7 +1051,7 @@ mod tests {
             &["example-org/example-repo", "example-org/Example-repo"],
         )];
         let out = render(
-            &[HostStatus::Answering(&snap)],
+            &[HostStatus::Answering(&snap, None)],
             &projects,
             &PrStatuses::new(),
             ts("2026-08-10T19:57:01.322Z"),

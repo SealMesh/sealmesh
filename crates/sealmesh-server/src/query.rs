@@ -28,7 +28,7 @@ use crate::{
     access_cache::RepoKey,
     auth::{Directory, RepoAccess},
     check_budget::{CHECK_BURST, CheckBudgets, MAX_TRACKED_READERS},
-    registry::Registry,
+    registry::{Attributed, Registry, Target},
 };
 
 pub const FANOUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,23 +52,43 @@ pub const ACCESS_BUDGET: Duration = Duration::from_secs(10);
 /// listing many repos cannot make one line unbounded.
 const LOGGED_REPOS: usize = 8;
 
+/// Asks every attached daemon connection, and reports each host once per
+/// connection — what an `Ask` sends a reader, which has no machine to show.
 pub async fn ask_all(
     registry: &Registry,
     asked_by: &HostId,
     timeout: Duration,
 ) -> Vec<(HostId, HostState)> {
+    ask_every_machine(registry, asked_by, timeout)
+        .await
+        .into_iter()
+        .map(|(who, state)| (who.host, state))
+        .collect()
+}
+
+/// Asks every attached daemon connection: one row per connection, plus one
+/// `Unreachable` row for each machine or host with nothing connected (see
+/// [`Registry::targets`]). Sorted by host, then machine.
+pub async fn ask_every_machine(
+    registry: &Registry,
+    asked_by: &HostId,
+    timeout: Duration,
+) -> Vec<(Attributed, HostState)> {
     let mut waiting = Vec::new();
     let mut out = Vec::new();
 
-    for host in registry.known_hosts() {
-        match registry.dispatch(&host, asked_by) {
-            Some((ticket, rx)) => waiting.push((host, ticket, rx)),
-            None => out.push((host, HostState::Unreachable {})),
+    for target in registry.targets() {
+        match target {
+            Target::Live(conn, who) => match registry.dispatch_to(conn, asked_by) {
+                Some((ticket, rx)) => waiting.push((who, ticket, rx)),
+                None => out.push((who, HostState::Unreachable {})),
+            },
+            Target::Gone(who) => out.push((who, HostState::Unreachable {})),
         }
     }
 
     let deadline = Instant::now() + timeout;
-    for (host, ticket, rx) in waiting {
+    for (who, ticket, rx) in waiting {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let state = match tokio::time::timeout(remaining, rx).await {
             Ok(Ok(state)) => state,
@@ -77,7 +97,7 @@ pub async fn ask_all(
                 HostState::Unreachable {}
             }
         };
-        out.push((host, state));
+        out.push((who, state));
     }
 
     out.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -85,9 +105,11 @@ pub async fn ask_all(
 }
 
 /// What one reader is shown of one fan-out.
+///
+/// `K` is whose each row is: a host, or a host and machine.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Narrowed {
-    pub reports: Vec<(HostId, HostState)>,
+pub struct Narrowed<K = HostId> {
+    pub reports: Vec<(K, HostState)>,
     /// Whether any agent was withheld, anywhere in this query.
     pub partial: bool,
 }
@@ -102,8 +124,8 @@ pub async fn ask_readable<D: Directory>(
     token: &SecretToken,
     asked_by: &HostId,
     timeout: Duration,
-) -> Narrowed {
-    let reports = ask_all(registry, asked_by, timeout).await;
+) -> Narrowed<Attributed> {
+    let reports = ask_every_machine(registry, asked_by, timeout).await;
     narrow(directory, budgets, token, asked_by, reports, ACCESS_BUDGET).await
 }
 
@@ -129,14 +151,14 @@ pub async fn readable_projects<D: Directory>(
 /// and any withheld row makes the whole answer partial. That last case is
 /// what keeps a host late in the round-robin, past the thirty-second
 /// answering host, from reading as a machine running nothing.
-async fn narrow<D: Directory>(
+async fn narrow<D: Directory, K>(
     directory: &D,
     budgets: &CheckBudgets,
     token: &SecretToken,
     asked_by: &HostId,
-    mut reports: Vec<(HostId, HostState)>,
+    mut reports: Vec<(K, HostState)>,
     budget: Duration,
-) -> Narrowed {
+) -> Narrowed<K> {
     let wanted = fair_order(reports.iter().filter_map(|(_, state)| match state {
         HostState::Answering { snapshot } => Some(snapshot.agents.iter().map(|agent| &agent.repo)),
         HostState::NotSharing {} | HostState::Unreachable {} | HostState::Throttled {} => None,

@@ -18,8 +18,8 @@ use axum::{
     routing::get,
 };
 use sealmesh_proto::{
-    BackfillRefusal, ClientFrame, MAX_FRAME_BYTES, PostRefusal, QueryId, Role, SecretToken,
-    ServerFrame, decode,
+    BackfillRefusal, ClientFrame, HostState, MAX_FRAME_BYTES, PostRefusal, QueryId, Role,
+    SecretToken, ServerFrame, decode,
 };
 
 use crate::{
@@ -28,7 +28,7 @@ use crate::{
     history::RoomHistory,
     projects::ProjectMap,
     query::{FANOUT_TIMEOUT, Narrowed, ask_readable, readable_projects},
-    registry::Registry,
+    registry::{Attributed, Registry},
     rooms::{Posted, REVALIDATE_EVERY, Rooms},
 };
 
@@ -335,7 +335,7 @@ async fn serve_daemon<D: Directory>(
     host: sealmesh_wire::HostId,
     token: SecretToken,
 ) {
-    let (mut outbox, _attached) = app.registry.attach(host.clone());
+    let (mut outbox, attached) = app.registry.attach(host.clone());
     let (mut deliveries, membership) = app.rooms.connect(host.clone());
     let mut revalidate = revalidation_timer(app.room_revalidate_every, jitter_seed(&host));
 
@@ -548,6 +548,21 @@ async fn serve_daemon<D: Directory>(
                 match incoming {
                     Received::Frame(ClientFrame::Answer { id, state }) => {
                         app.registry.resolve(id, state);
+                    }
+                    // Which of this host's machines this connection is. Once
+                    // per connection: a second name is ignored, so a
+                    // connection cannot walk through names evicting this
+                    // person's other machines.
+                    Received::Frame(ClientFrame::Machine { name }) => {
+                        match attached.name(name) {
+                            Some(0) => {}
+                            Some(replaced) => eprintln!(
+                                "sealmesh-server: {host} reconnected from a machine it was \
+                                 already connected from, and replaced {replaced} older \
+                                 connection(s)"
+                            ),
+                            None => unhandled_frames = unhandled_frames.saturating_add(1),
+                        }
                     }
                     Received::Frame(ClientFrame::Events { batch }) => {
                         events_dropped = events_dropped
@@ -905,6 +920,13 @@ async fn serve_reader<D: Directory>(
                     }
                 }
             }
+            ClientFrame::AskMachines { id } => {
+                for frame in answer_ask_machines(app, &asked_by, &token, id).await {
+                    if send(&mut socket, &frame).await.is_err() {
+                        return;
+                    }
+                }
+            }
             _ => continue,
         }
     }
@@ -922,6 +944,30 @@ async fn answer_ask<D: Directory>(
     token: &SecretToken,
     id: QueryId,
 ) -> Vec<ServerFrame> {
+    let Narrowed { reports, partial } = ask_readable(
+        &app.registry,
+        &app.directory,
+        &app.check_budgets,
+        token,
+        asked_by,
+        FANOUT_TIMEOUT,
+    )
+    .await;
+    let reports = reports
+        .into_iter()
+        .map(|(who, state)| (who.host, state))
+        .collect();
+    answer_frames(id, Narrowed { reports, partial })
+}
+
+/// A reader's `AskMachines`, answered: the same fan-out and the same
+/// narrowing as [`answer_ask`], with each row's machine kept.
+async fn answer_ask_machines<D: Directory>(
+    app: &App<D>,
+    asked_by: &sealmesh_wire::HostId,
+    token: &SecretToken,
+    id: QueryId,
+) -> Vec<ServerFrame> {
     let narrowed = ask_readable(
         &app.registry,
         &app.directory,
@@ -931,7 +977,7 @@ async fn answer_ask<D: Directory>(
         FANOUT_TIMEOUT,
     )
     .await;
-    answer_frames(id, narrowed)
+    machine_frames(id, narrowed)
 }
 
 /// A `Projects` request, answered — a reader's, or a daemon's resolving its
@@ -957,10 +1003,33 @@ async fn answer_projects<D: Directory>(
 /// cannot decode only while it is still reading — so this order is what makes
 /// the new frame harmless to every installed `who`.
 fn answer_frames(id: QueryId, narrowed: Narrowed) -> Vec<ServerFrame> {
+    in_answer_order(id, narrowed, |host, state| ServerFrame::Report {
+        id,
+        host,
+        state,
+    })
+}
+
+/// [`answer_frames`] for `AskMachines`: one `MachineReport` per machine, in
+/// the same order, with the same `Partial` and `Complete` after them.
+fn machine_frames(id: QueryId, narrowed: Narrowed<Attributed>) -> Vec<ServerFrame> {
+    in_answer_order(id, narrowed, |who, state| ServerFrame::MachineReport {
+        id,
+        host: who.host,
+        machine: who.machine,
+        state,
+    })
+}
+
+fn in_answer_order<K>(
+    id: QueryId,
+    narrowed: Narrowed<K>,
+    report: impl Fn(K, HostState) -> ServerFrame,
+) -> Vec<ServerFrame> {
     let Narrowed { reports, partial } = narrowed;
     let mut frames: Vec<ServerFrame> = reports
         .into_iter()
-        .map(|(host, state)| ServerFrame::Report { id, host, state })
+        .map(|(who, state)| report(who, state))
         .collect();
     if partial {
         frames.push(ServerFrame::Partial { id });
@@ -4154,5 +4223,245 @@ mod tests {
         send_frame(&mut reader, &ClientFrame::ListRooms {}).await;
         assert!(quiet_for(&mut reader, Duration::from_millis(200)).await);
         assert_eq!(store.page_reads(), 0);
+    }
+
+    // One login, several machines. A host is a GitHub login, so these are the
+    // same person's laptops; the router used to keep only the newest
+    // connection, and two machines evicted each other on every reconnect.
+
+    fn machine(name: &str) -> sealmesh_proto::MachineName {
+        sealmesh_proto::MachineName::try_from(name).unwrap()
+    }
+
+    async fn named_daemon(addr: std::net::SocketAddr, login: &str, name: &str) -> Ws {
+        let mut ws = daemon(addr, login).await;
+        send_frame(
+            &mut ws,
+            &ClientFrame::Machine {
+                name: machine(name),
+            },
+        )
+        .await;
+        ws
+    }
+
+    async fn reader(addr: std::net::SocketAddr, login: &str) -> Ws {
+        let mut ws = open(addr).await;
+        send_frame(
+            &mut ws,
+            &ClientFrame::Hello {
+                role: Role::Reader,
+                token: SecretToken::new(format!("ghp_{login}")),
+            },
+        )
+        .await;
+        assert!(matches!(
+            next_frame(&mut ws).await,
+            Some(ServerFrame::Welcome { .. })
+        ));
+        ws
+    }
+
+    /// Answers every query on `ws` as not sharing, until the router closes it.
+    fn answer_queries(mut ws: Ws) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(frame) = read_frame(&mut ws).await {
+                if let ServerFrame::Query { id, .. } = frame {
+                    send_frame(
+                        &mut ws,
+                        &ClientFrame::Answer {
+                            id,
+                            state: HostState::NotSharing {},
+                        },
+                    )
+                    .await;
+                }
+            }
+        })
+    }
+
+    /// Sends `ask` and reads everything up to and including its `Complete`.
+    async fn asked(reader: &mut Ws, ask: &ClientFrame) -> Vec<ServerFrame> {
+        send_frame(reader, ask).await;
+        let mut frames = Vec::new();
+        loop {
+            let frame = next_frame(reader).await.expect("the reader was closed");
+            let done = matches!(frame, ServerFrame::Complete { .. });
+            frames.push(frame);
+            if done {
+                return frames;
+            }
+        }
+    }
+
+    /// The registry's live rows, as (host, machine).
+    fn live(app: &App<Org>) -> Vec<(String, Option<String>)> {
+        app.registry
+            .targets()
+            .into_iter()
+            .filter_map(|target| match target {
+                crate::registry::Target::Live(_, who) => Some((
+                    who.host.as_str().to_owned(),
+                    who.machine.map(|m| m.as_str().to_owned()),
+                )),
+                crate::registry::Target::Gone(_) => None,
+            })
+            .collect()
+    }
+
+    async fn until_live(app: &App<Org>, expected: &[(&str, Option<&str>)]) {
+        let expected: Vec<(String, Option<String>)> = expected
+            .iter()
+            .map(|(h, m)| ((*h).to_owned(), m.map(str::to_owned)))
+            .collect();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while live(app) != expected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("live rows stayed {:?}, not {expected:?}", live(app)));
+    }
+
+    fn machine_report(login: &str, name: Option<&str>) -> ServerFrame {
+        ServerFrame::MachineReport {
+            id: QueryId(7),
+            host: host(login),
+            machine: name.map(machine),
+            state: HostState::NotSharing {},
+        }
+    }
+
+    #[tokio::test]
+    async fn over_the_socket_two_machines_of_one_login_both_stay_and_both_answer() {
+        let app = Arc::new(org_app(&[]));
+        let addr = serve(Arc::clone(&app)).await;
+
+        let laptop = named_daemon(addr, "atlas", "laptop").await;
+        until_live(&app, &[("atlas", Some("laptop"))]).await;
+        let desktop = named_daemon(addr, "atlas", "desktop").await;
+        until_live(
+            &app,
+            &[("atlas", Some("laptop")), ("atlas", Some("desktop"))],
+        )
+        .await;
+        let _laptop = answer_queries(laptop);
+        let _desktop = answer_queries(desktop);
+
+        let mut who = reader(addr, "atlas").await;
+        assert_eq!(
+            asked(&mut who, &ClientFrame::AskMachines { id: QueryId(7) }).await,
+            vec![
+                machine_report("atlas", Some("desktop")),
+                machine_report("atlas", Some("laptop")),
+                ServerFrame::Complete { id: QueryId(7) },
+            ]
+        );
+
+        // A reader from before machine names asks with `Ask`, and sees the
+        // host once per machine.
+        let report = ServerFrame::Report {
+            id: QueryId(8),
+            host: host("atlas"),
+            state: HostState::NotSharing {},
+        };
+        assert_eq!(
+            asked(&mut who, &ClientFrame::Ask { id: QueryId(8) }).await,
+            vec![
+                report.clone(),
+                report,
+                ServerFrame::Complete { id: QueryId(8) }
+            ]
+        );
+
+        // Neither machine evicted the other.
+        until_live(
+            &app,
+            &[("atlas", Some("laptop")), ("atlas", Some("desktop"))],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn over_the_socket_a_reconnect_from_the_same_machine_replaces_the_old_connection() {
+        let app = Arc::new(org_app(&[]));
+        let addr = serve(Arc::clone(&app)).await;
+
+        let mut stale = named_daemon(addr, "atlas", "laptop").await;
+        until_live(&app, &[("atlas", Some("laptop"))]).await;
+        let fresh = named_daemon(addr, "atlas", "laptop").await;
+
+        assert_eq!(
+            next_frame(&mut stale).await,
+            None,
+            "the router closes the connection the same machine replaced"
+        );
+        until_live(&app, &[("atlas", Some("laptop"))]).await;
+        let _fresh = answer_queries(fresh);
+
+        let mut who = reader(addr, "atlas").await;
+        assert_eq!(
+            asked(&mut who, &ClientFrame::AskMachines { id: QueryId(7) }).await,
+            vec![
+                machine_report("atlas", Some("laptop")),
+                ServerFrame::Complete { id: QueryId(7) },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn over_the_socket_a_daemon_that_never_names_its_machine_answers_beside_one_that_does() {
+        let app = Arc::new(org_app(&[]));
+        let addr = serve(Arc::clone(&app)).await;
+
+        // A v0.1.0 daemon: `Hello`, then straight to answering queries.
+        let old = daemon(addr, "atlas").await;
+        until_live(&app, &[("atlas", None)]).await;
+        let new = named_daemon(addr, "atlas", "laptop").await;
+        until_live(&app, &[("atlas", None), ("atlas", Some("laptop"))]).await;
+        let _old = answer_queries(old);
+        let _new = answer_queries(new);
+
+        let mut who = reader(addr, "atlas").await;
+        assert_eq!(
+            asked(&mut who, &ClientFrame::AskMachines { id: QueryId(7) }).await,
+            vec![
+                machine_report("atlas", None),
+                machine_report("atlas", Some("laptop")),
+                ServerFrame::Complete { id: QueryId(7) },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn over_the_socket_a_second_machine_name_on_one_connection_is_ignored() {
+        let app = Arc::new(org_app(&[]));
+        let addr = serve(Arc::clone(&app)).await;
+
+        let _desktop = named_daemon(addr, "atlas", "desktop").await;
+        until_live(&app, &[("atlas", Some("desktop"))]).await;
+        let mut laptop = named_daemon(addr, "atlas", "laptop").await;
+        until_live(
+            &app,
+            &[("atlas", Some("desktop")), ("atlas", Some("laptop"))],
+        )
+        .await;
+
+        // Renaming itself to the other machine would evict it.
+        send_frame(
+            &mut laptop,
+            &ClientFrame::Machine {
+                name: machine("desktop"),
+            },
+        )
+        .await;
+        assert!(quiet_for(&mut laptop, Duration::from_millis(200)).await);
+        assert_eq!(
+            live(&app),
+            vec![
+                ("atlas".to_owned(), Some("desktop".to_owned())),
+                ("atlas".to_owned(), Some("laptop".to_owned())),
+            ]
+        );
     }
 }
