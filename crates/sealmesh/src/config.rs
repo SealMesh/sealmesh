@@ -16,6 +16,10 @@ const USER_CONFIG: &str = "sealmesh/config.toml";
 pub struct Config {
     #[serde(default = "default_integration_branch")]
     pub integration_branch: String,
+    /// Ticket ID prefixes (`ENG` for `ENG-557`) to read out of branch names.
+    /// Optional: empty means no branch ever names a ticket, so ticket rooms
+    /// are off and checkouts resolve to their repo room alone.
+    #[serde(default)]
     pub ticket_prefixes: Vec<String>,
     pub server: ServerConfig,
     pub allow: AllowConfig,
@@ -89,12 +93,17 @@ pub struct ChatConfig {
     pub hook_drain: bool,
 }
 
+/// Deprecated. Agent-state events are emitted on a timer, but nothing on
+/// the router consumes them: it counts each batch and drops it. Off by
+/// default; an explicit `enabled = true` still emits exactly as before (the
+/// wire frames are unchanged so old routers and daemons keep working), and
+/// the daemon warns once at start that the section is going away.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsConfig {
     #[serde(default = "default_event_interval_secs")]
     pub interval_secs: u64,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
 }
 
@@ -121,7 +130,7 @@ impl Default for EventsConfig {
     fn default() -> Self {
         Self {
             interval_secs: default_event_interval_secs(),
-            enabled: true,
+            enabled: false,
         }
     }
 }
@@ -188,10 +197,6 @@ fn default_integration_branch() -> String {
 
 fn default_event_interval_secs() -> u64 {
     120
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_declared_ttl_secs() -> u64 {
@@ -597,8 +602,41 @@ mod tests {
     #[test]
     fn a_config_without_an_events_section_gets_the_defaults() {
         let config = config_with("").unwrap();
+        assert!(
+            !config.events.enabled,
+            "events are deprecated and off by default"
+        );
+        assert_eq!(config.events.interval_secs, 120);
+        let default = EventsConfig::default();
+        assert!(!default.enabled, "Default and serde disagree on events");
+        assert_eq!(default.interval_secs, config.events.interval_secs);
+    }
+
+    #[test]
+    fn events_can_still_be_turned_on_explicitly() {
+        let config = config_with("[events]\nenabled = true").unwrap();
         assert!(config.events.enabled);
         assert_eq!(config.events.interval_secs, 120);
+    }
+
+    #[test]
+    fn a_config_with_no_ticket_prefixes_loads_and_validates() {
+        let toml = r#"
+            [server]
+            url = "https://router.example.com"
+            [allow]
+            repos = ["example-org/example-repo"]
+            paths = ["/tmp"]
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        assert!(config.ticket_prefixes.is_empty());
+        assert!(config.collect_options().ticket_prefixes.is_empty());
+
+        let explicit_empty = format!("ticket_prefixes = []\n{toml}");
+        let config: Config = toml::from_str(&explicit_empty).unwrap();
+        config.validate().unwrap();
+        assert!(config.ticket_prefixes.is_empty());
     }
 
     #[test]

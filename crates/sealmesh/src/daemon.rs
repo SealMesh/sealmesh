@@ -232,7 +232,18 @@ fn listen(path: &std::path::Path) -> Result<(tokio::net::UnixListener, u32)> {
     Ok((listener, uid))
 }
 
+/// The one line the daemon prints at start when `[events] enabled = true`
+/// is set explicitly. Events still emit; this only says they are going away.
+fn events_deprecation(config: &Config) -> Option<&'static str> {
+    config.events.enabled.then_some(
+        "[events] enabled = true: events are deprecated and will be removed; nothing consumes them",
+    )
+}
+
 pub async fn run(config: &Config) -> Result<()> {
+    if let Some(warning) = events_deprecation(config) {
+        eprintln!("warning: {warning}");
+    }
     let mut backoff = BACKOFF_MIN;
     let mut watch = Watch::new();
     let mut rooms = start_rooms(config);
@@ -723,6 +734,28 @@ mod tests {
         assert_eq!(tick_action(true, false), Tick::Collect);
         assert_eq!(tick_action(false, false), Tick::Disabled);
         assert_eq!(tick_action(false, true), Tick::Disabled);
+    }
+
+    #[test]
+    fn only_an_explicit_events_opt_in_warns_and_it_still_emits() {
+        let base = "[server]\nurl = \"https://router.example.com\"\n\
+                    [allow]\nrepos = [\"example-org/example-repo\"]\npaths = [\"/tmp\"]\n";
+        let quiet: Config = toml::from_str(base).unwrap();
+        assert_eq!(events_deprecation(&quiet), None);
+        assert_eq!(
+            tick_action(quiet.events.enabled, false),
+            Tick::Disabled,
+            "events are off by default"
+        );
+
+        let on: Config = toml::from_str(&format!("{base}[events]\nenabled = true\n")).unwrap();
+        let warning = events_deprecation(&on).unwrap();
+        assert!(warning.contains("deprecated"), "{warning}");
+        assert_eq!(
+            tick_action(on.events.enabled, false),
+            Tick::Collect,
+            "an explicit opt-in still emits"
+        );
     }
 
     #[test]

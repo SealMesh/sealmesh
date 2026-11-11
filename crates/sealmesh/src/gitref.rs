@@ -412,4 +412,27 @@ mod tests {
             Some("ABC-123".to_owned())
         );
     }
+
+    #[test]
+    fn with_no_prefixes_no_branch_names_a_ticket() {
+        for name in ["feature/eng-557-rescore", "ENG-1", "fix/gh-12-crash"] {
+            assert_eq!(ticket_from_branch(&branch_of(name), &[]), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn with_no_prefixes_a_checkout_still_reads_its_repo_and_branch() {
+        let scratch = Scratch::checkout(
+            "noprefix",
+            "feature/eng-557-rescore",
+            Some("git@github.com:example-org/example-repo.git"),
+        );
+        let got = read(&scratch.0, &[]).unwrap();
+        assert_eq!(got.repo.as_str(), "example-org/example-repo");
+        assert_eq!(
+            got.branch.as_ref().map(BranchName::as_str),
+            Some("feature/eng-557-rescore")
+        );
+        assert_eq!(got.ticket, None, "no prefixes means no ticket room");
+    }
 }
