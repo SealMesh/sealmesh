@@ -58,9 +58,9 @@ pub struct Agent {
     /// Which agentic tool this row came from. `None` means the producer
     /// predates the field, which is a different fact from "the producer could
     /// not tell" — collapsing them into one sentinel would hide the second.
-    /// It stays `None` on the wire until every reader can parse it, because
-    /// `Agent` denies unknown fields and an old peer meeting this drops its
-    /// whole connection.
+    /// Every reader since v0.1.0 parses it and every producer since then sets
+    /// it, so a new `ToolId` value (`codex`, say) needs no wire change: the
+    /// field is a validated string, not an enum an old peer would refuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<ToolId>,
     pub started_at: Timestamp,
@@ -271,6 +271,11 @@ impl ToolId {
     /// fails here rather than turning into a silently absent tool at runtime.
     pub fn claude_code() -> Self {
         Self("claude-code".to_owned())
+    }
+
+    /// OpenAI's Codex CLI, read natively from its rollout files.
+    pub fn codex() -> Self {
+        Self("codex".to_owned())
     }
 
     /// What a declared record reports when its writer did not name a tool.
@@ -772,9 +777,25 @@ mod tests {
     fn the_names_this_crate_builds_by_hand_would_pass_validation() {
         // These skip `try_from` because the field is private here. That is only
         // safe while they would have passed it.
-        for built in [ToolId::claude_code(), ToolId::declared()] {
+        for built in [ToolId::claude_code(), ToolId::codex(), ToolId::declared()] {
             assert_eq!(ToolId::try_from(built.as_str()), Ok(built.clone()));
         }
+    }
+
+    #[test]
+    fn a_codex_row_round_trips_on_the_wire() {
+        let mut snapshot = full_snapshot();
+        for agent in &mut snapshot.agents {
+            agent.tool = Some(ToolId::codex());
+        }
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains(r#""tool":"codex""#), "{json}");
+        let back: Snapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, snapshot);
+        assert_eq!(
+            back.agents.first().and_then(|a| a.tool.clone()),
+            Some(ToolId::codex())
+        );
     }
 
     #[test]

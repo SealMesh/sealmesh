@@ -9,8 +9,8 @@
 **How any tool tells sealmesh that an agent is running, without sealmesh
 knowing anything about that tool.**
 
-sealmesh reads Claude Code's own files directly, because it can. Nothing else
-gets that treatment. Everything else — an orchestrator, an editor hook, a CI
+sealmesh reads Claude Code's and Codex's own files directly, because it can.
+Nothing else gets that treatment. Everything else — an orchestrator, an editor hook, a CI
 runner, an agent framework that does not exist yet — writes one small JSON file
 per agent, and sealmesh reads it the same way it reads everything else: through
 the same two allowlists, into the same row.

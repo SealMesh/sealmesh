@@ -14,7 +14,7 @@ See what your coding agents are working on, across every machine, without asking
 
 > [!NOTE]
 > **Early preview — v0.1, under construction.** Sealmesh works end to end, but
-> it is young: Claude Code is the only agent read natively, Windows is not
+> it is young: Claude Code and Codex are the only agents read natively, Windows is not
 > supported, and the protocol may still change between minor versions. The
 > [status page](https://sealmesh.dev/docs/status/) lists what is missing.
 

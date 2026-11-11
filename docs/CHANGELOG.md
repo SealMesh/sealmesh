@@ -13,6 +13,14 @@ a fix to a released version always ships as a new version.
 - The release now also publishes `ghcr.io/allocmemory/sealmesh-server:<version>-dynamodb`,
   built with the `dynamodb` feature. The Dockerfile takes `--build-arg FEATURES=...`;
   the plain `<version>` image is unchanged.
+- **Codex sessions show up in `sealmesh who`.** sealmesh reads Codex's rollout
+  files under `$CODEX_HOME/sessions` (default `~/.codex`) natively, with no
+  config: a session written to in the last 15 minutes is a row tagged `codex`,
+  working while a turn is open and idle after it ends. Only directories and
+  turn boundaries are read — never message text. A `[[provider]]` block named
+  `codex` is now skipped in favor of the native reader; `sealmesh doctor` says
+  so. See "Native providers" in [providers.md](providers.md). No wire change:
+  `tool` is already a validated string.
 - **Events are off by default and deprecated.** Nothing on the router consumes
   them. `[events] enabled = true` still emits exactly as before and warns once
   at daemon start; the wire frames are unchanged, so older routers and daemons

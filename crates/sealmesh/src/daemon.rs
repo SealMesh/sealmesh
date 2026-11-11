@@ -151,6 +151,7 @@ fn collect_now(config: &Config) -> Result<Vec<wire::Agent>> {
     let options = config.collect_options();
     let providers = collect::providers::with_configured(
         roots::discover_local(&config.claude.extra_roots),
+        collect::codex::discover_home(),
         options.declared_dir.clone(),
         options.declared_ttl,
         &config.provider,

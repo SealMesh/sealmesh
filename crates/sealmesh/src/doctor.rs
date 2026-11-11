@@ -55,10 +55,33 @@ pub async fn run(config: &Config) -> Result<()> {
         println!("  {}", root.path().display());
     }
 
+    let codex_home = collect::codex::discover_home();
+    match &codex_home {
+        Some(home) if home.join("sessions").is_dir() => {
+            println!("\ncodex home\n  {}", home.display());
+        }
+        Some(home) => println!(
+            "\ncodex home\n  {} (no sessions/ yet; set CODEX_HOME if Codex keeps its state elsewhere)",
+            home.display()
+        ),
+        None => println!("\ncodex home\n  none (no home directory and no CODEX_HOME)"),
+    }
+    for spec in config
+        .provider
+        .iter()
+        .filter(|spec| collect::providers::shadowed_by_native(spec))
+    {
+        println!(
+            "  [[provider]] {:?} is skipped: sealmesh reads Codex natively",
+            spec.name
+        );
+    }
+
     let procs = collect::liveness::ProcessTable::read();
     let options = config.collect_options();
     let providers = collect::providers::with_configured(
         roots.clone(),
+        codex_home,
         options.declared_dir.clone(),
         options.declared_ttl,
         &config.provider,
