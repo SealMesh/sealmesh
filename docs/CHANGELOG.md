@@ -3,6 +3,16 @@
 All notable changes to Sealmesh. Versions follow [Semantic Versioning](https://semver.org);
 a fix to a released version always ships as a new version.
 
+## Unreleased
+
+- **Events are off by default and deprecated.** Nothing on the router consumes
+  them. `[events] enabled = true` still emits exactly as before and warns once
+  at daemon start; the wire frames are unchanged, so older routers and daemons
+  keep working.
+- **`ticket_prefixes` is optional; ticket rooms are opt-in.** A config without
+  it loads, no branch is read as a ticket, and `sealmesh doctor` says
+  `ticket rooms: off (no ticket_prefixes)`.
+
 ## 0.1.0 — 2026-10-31
 
 The first public release.

@@ -11,7 +11,7 @@ use crate::{
 pub async fn run(config: &Config) -> Result<()> {
     println!("router            {}", config.server.connect_url()?);
     println!("integration       origin/{}", config.integration_branch);
-    println!("ticket prefixes   {}", config.ticket_prefixes.join(", "));
+    println!("ticket rooms      {}", ticket_rooms_line(config));
     println!("host              derived from your GitHub login at connect");
 
     let killed = crate::daemon::is_off();
@@ -140,6 +140,16 @@ fn chat_status_line(config: &Config, killed: bool) -> &'static str {
         "disabled (kill file overrides [chat] enabled)"
     } else {
         "disabled ([chat] enabled = false)"
+    }
+}
+
+/// The ticket-room line. Ticket rooms are opt-in through `ticket_prefixes`:
+/// with none, no branch names a ticket and a checkout has only its repo room.
+fn ticket_rooms_line(config: &Config) -> String {
+    if config.ticket_prefixes.is_empty() {
+        "off (no ticket_prefixes)".to_owned()
+    } else {
+        format!("on (prefixes {})", config.ticket_prefixes.join(", "))
     }
 }
 
@@ -382,6 +392,14 @@ mod tests {
         let (project_rooms, hook_drain) = chat_option_lines(&drain);
         assert!(project_rooms.starts_with("off"), "{project_rooms}");
         assert!(hook_drain.starts_with("on"), "{hook_drain}");
+    }
+
+    #[test]
+    fn the_doctor_says_ticket_rooms_are_off_without_prefixes() {
+        let mut config = config_with_chat(false);
+        assert_eq!(ticket_rooms_line(&config), "on (prefixes ENG)");
+        config.ticket_prefixes.clear();
+        assert_eq!(ticket_rooms_line(&config), "off (no ticket_prefixes)");
     }
 
     #[test]

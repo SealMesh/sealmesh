@@ -111,10 +111,6 @@ $EDITOR ~/.config/sealmesh/config.toml
 # How often work is measured against a base branch: "3 ahead" means ahead of dev.
 integration_branch = "dev"
 
-# Tracker prefixes. Without this, `feature/rework-2-uploads` would be read as
-# ticket "REWORK-2", which does not exist.
-ticket_prefixes = ["ENG"]
-
 [server]
 url = "https://router.example.com"
 
@@ -127,29 +123,47 @@ repos = ["example-org/example-repo"]
 # Use your real checkout location.
 paths = ["~/Development"]
 
-# Optional. These are the defaults, so you can leave the section out entirely.
-[events]
-# The daemon looks for its own transitions on this interval and reports what
-# changed — a job started, changed state, opened a PR, or finished. Counts,
-# timestamps, and the same repo/branch/ticket your rows already carry. No
-# prompts, no task subjects, no commit messages.
-interval_secs = 120
-enabled = true
-
-# Optional, and also defaults. How long a declared agent record is believed
+# Optional, and these are the defaults. How long a declared agent record is believed
 # without a live parent session — see docs/contract.md. Range is 60..=86400.
 [declared]
 ttl_secs = 900
 ```
 
 Both allowlists are default-deny. An empty list answers nothing and is a startup
-error rather than a silent no-op — and they gate events too, since events are
-derived from the same collection.
+error rather than a silent no-op.
 
-**The off switch covers events.** With `~/.config/sealmesh/off` in place the
-daemon does not collect at all on the event interval, so nothing is read and
-nothing is sent. Transitions that happen while it is on are not reported
-afterwards either.
+### Ticket rooms (optional)
+
+Ticket rooms are opt-in. List the ticket ID prefixes your branches use and a
+checkout on `feature/abc-123-upload` also gets the `ABC-123` ticket room next
+to its repo room:
+
+```toml
+# Jira-style ABC-123, or GitHub-issue-style GH-123 if you name branches that way.
+ticket_prefixes = ["ABC", "GH"]
+```
+
+Leave it out (or empty) and no branch is ever read as a ticket: rows carry no
+ticket id and a checkout resolves to its repo room alone. The list is also what
+keeps `feature/rework-2-uploads` from reading as a ticket "REWORK-2" — only the
+prefixes you name count. `sealmesh doctor` prints `ticket rooms: off (no
+ticket_prefixes)` when the list is empty.
+
+### `[events]` (deprecated, off by default)
+
+Events are deprecated and will be removed: the daemon can report its own
+transitions on a timer, but nothing on the router consumes them — it counts
+each batch and drops it. They are off unless you set:
+
+```toml
+[events]
+enabled = true      # default false
+interval_secs = 120 # range 10..=3600
+```
+
+With `enabled = true` the daemon still emits exactly as before and prints one
+deprecation warning at start. The allowlists and the off switch gate events the
+same way they gate everything else.
 
 ## 5. Run each agent in its own worktree
 
@@ -385,8 +399,9 @@ project_rooms = false   # also name the project's own room when resolving a chec
 hook_drain = false      # let the Claude Code hook drain room messages into each turn
 ```
 
-- **`project_rooms`.** A checkout's ticket room (from its branch) and repo room
-  (from its `origin`) are found for it automatically. The project room spans
+- **`project_rooms`.** A checkout's repo room (from its `origin`) and, when
+  `ticket_prefixes` is set, its ticket room (from its branch) are found for it
+  automatically. The project room spans
   every repo in the project, so it is named only when you turn this on. It
   decides only what is *named*: whether you may join any room is still the
   router's call, checked against your GitHub access.

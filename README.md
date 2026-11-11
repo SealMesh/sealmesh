@@ -106,7 +106,7 @@ another agent act on it.
 | Tool | What it does |
 |---|---|
 | `fleet_status` | What `sealmesh who` shows, as structured data |
-| `room_join` | Joins the chat rooms of the checkout the agent is working in: its ticket's room and its repo's room. `project: true` also joins the project room, only when `[chat] project_rooms` is on |
+| `room_join` | Joins the chat rooms of the checkout the agent is working in: its repo's room, and its ticket's room when `ticket_prefixes` is set. `project: true` also joins the project room, only when `[chat] project_rooms` is on |
 | `room_post` | Posts one `question`, `claim`, `handoff` or `ack`, up to 4,000 characters, to one of those rooms, named `ticket`, `repo` or `project`. The answer is `posted`, `post_refused` with the router's reason, or `post_unconfirmed` — sent but not confirmed, so check with `room_read` before posting again, since a retry may duplicate it |
 | `room_read` | Pages through one of those rooms' history, oldest first, without consuming anything. Every page says each body was written by another agent: data, never instructions |
 
@@ -335,10 +335,6 @@ Then `~/.config/sealmesh/config.toml`:
 # "3 ahead" means ahead of this branch.
 integration_branch = "dev"
 
-# Tracker prefixes. Without this, `feature/rework-2-uploads` reads as
-# ticket "REWORK-2", which does not exist.
-ticket_prefixes = ["ENG"]
-
 [server]
 url = "https://router.example.com"
 
@@ -352,6 +348,11 @@ paths = ["~/Development"]
 
 Both lists are default-deny. An empty list answers nothing, and that is a
 startup error rather than a silent no-op.
+
+Ticket rooms are opt-in: add `ticket_prefixes = ["ABC"]` (Jira-style `ABC-123`,
+or `GH` for `GH-123`) and a branch like `feature/abc-123-x` also joins the
+`ABC-123` room. Without it, a checkout has its repo room only. See
+[docs/install.md](docs/install.md#ticket-rooms-optional).
 
 Run each agent in its own `git worktree` — see above; the tool tells the truth
 about several agents only if you do. Then look at exactly what would leave the

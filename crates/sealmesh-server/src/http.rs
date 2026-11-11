@@ -747,8 +747,8 @@ async fn serve_daemon<D: Directory>(
 
     if events_dropped > 0 {
         eprintln!(
-            "sealmesh-server: dropped {events_dropped} events from {host} — the events \
-             channel has no consumer yet"
+            "sealmesh-server: dropped {events_dropped} events from {host} — events are \
+             deprecated and nothing consumes them; set [events] enabled = false on that daemon"
         );
     }
     if undecodable_frames > 0 {
