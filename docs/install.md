@@ -521,6 +521,10 @@ first, then whether your org invitation is still pending.
 
 ## Running your own router
 
+On AWS, the Terraform recipe in [deploy/aws](../deploy/aws/README.md) does all of
+this for you; see [cloud.md](cloud.md). The rest of this section is for running it
+by hand.
+
 One router serves one GitHub organization. It is one process and one SQLite
 file: room chat for 7 days and nothing else — no snapshot and no bucket. It
 holds live connections and the names of hosts it has seen since it started, and
