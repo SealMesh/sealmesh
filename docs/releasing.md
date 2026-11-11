@@ -37,7 +37,13 @@ regenerate steps above, and the Dependabot PR is closed.
    workspace dependency in the root `Cargo.toml`, then `cargo build` to refresh
    `Cargo.lock`.
 2. Add the version's section to `docs/CHANGELOG.md`.
-3. Commit, then tag and push: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+3. Land steps 1–2 through a pull request (main only takes PRs), then tag the
+   merge commit and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+4. Once the release workflow finishes, install it the way a user would:
+   `gh workflow run install-smoke.yml -f version=X.Y.Z`. It runs
+   `brew install allocmemory/tap/sealmesh allocmemory/tap/sealmesh-mcp` on a
+   clean macOS runner and both router images (`X.Y.Z`, `X.Y.Z-dynamodb`) on
+   Linux, and checks every binary reports X.Y.Z.
 
 ### Before the first release
 

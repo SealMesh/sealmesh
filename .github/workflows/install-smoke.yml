@@ -1,0 +1,52 @@
+name: Install smoke test
+
+# Installs a published release the way a user would, on clean runners:
+# Homebrew on macOS and the router image on Linux. Run it by hand after a
+# release (Actions -> Install smoke test -> Run workflow) or from the CLI:
+#   gh workflow run install-smoke.yml -f version=0.2.0
+# No third-party actions, so there is nothing to pin.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version without the leading v, e.g. 0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  brew:
+    name: brew (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Install from the tap
+        run: brew install allocmemory/tap/sealmesh allocmemory/tap/sealmesh-mcp
+      - name: Check versions
+        run: |
+          set -eu
+          sealmesh --version
+          sealmesh-mcp --version
+          sealmesh --version | grep -F "$VERSION"
+          sealmesh-mcp --version | grep -F "$VERSION"
+
+  docker:
+    name: docker (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Router image runs
+        run: |
+          set -eu
+          for tag in "$VERSION" "$VERSION-dynamodb"; do
+            image="ghcr.io/allocmemory/sealmesh-server:$tag"
+            docker pull "$image"
+            docker run --rm "$image" --version | tee /dev/stderr | grep -F "$VERSION"
+          done
