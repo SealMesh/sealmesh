@@ -8,7 +8,12 @@ RUN rustup show active-toolchain || rustup toolchain install
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-RUN cargo build --release --locked --bin sealmesh-server
+# Empty by default: the published `<version>` image keeps history in SQLite and
+# carries no AWS SDK. `--build-arg FEATURES=dynamodb` builds the
+# `<version>-dynamodb` variant the AWS recipe in deploy/aws runs.
+ARG FEATURES=""
+RUN cargo build --release --locked -p sealmesh-server --bin sealmesh-server \
+    ${FEATURES:+--features "$FEATURES"}
 
 # The runtime image has no shell to create directories with, so the history
 # directory is made here and copied over owned by the nonroot user (65532).
