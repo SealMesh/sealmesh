@@ -14,12 +14,14 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
     env:
       IMAGE: ghcr.io/allocmemory/sealmesh-server
     steps:

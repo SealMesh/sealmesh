@@ -10,16 +10,20 @@ on:
   pull_request_target:
     types: [opened, synchronize, closed]
 
-permissions:
-  actions: write
-  contents: write
-  pull-requests: write
-  statuses: write
+# Nothing by default; the one job below asks for exactly what the CLA bot
+# needs: commit signatures to `cla-signatures`, comment on the pull request,
+# set its commit status and re-run itself on `recheck`.
+permissions: {}
 
 jobs:
   cla:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+      statuses: write
     if: |
       github.event_name == 'pull_request_target' ||
       (github.event.issue.pull_request &&
