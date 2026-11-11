@@ -12,6 +12,23 @@ a fix to a released version always ships as a new version.
 - **`ticket_prefixes` is optional; ticket rooms are opt-in.** A config without
   it loads, no branch is read as a ticket, and `sealmesh doctor` says
   `ticket rooms: off (no ticket_prefixes)`.
+- **Several machines on one GitHub account.** The router used to keep one
+  connection per login, so a second machine signed in as the same person
+  replaced the first, and the two took turns being connected. It now keeps one
+  connection per machine: a daemon names its machine (from the hostname, or
+  `machine` in the config) right after connecting, a reconnect from the same
+  machine replaces its old connection, and another machine is added beside it.
+  `sealmesh who` and the MCP `fleet_status` tool show each machine as
+  `login@machine`. See "A second machine" in [install.md](install.md).
+- Wire: three new frame variants — `ClientFrame::Machine`,
+  `ClientFrame::AskMachines` and `ServerFrame::MachineReport`. No existing
+  frame changed. v0.1.0 daemons and readers keep working against the new
+  router: a v0.1.0 daemon gets a connection of its own, and a v0.1.0 reader
+  sees your login once per machine. A new reader asks an old router the old
+  way.
+- Post rate, room token allowance and turn cap stay per login, shared by all of
+  one person's machines.
+- `sealmesh-server --version` (and `-V`).
 
 ## 0.1.0 — 2026-10-31
 

@@ -117,6 +117,98 @@ pub struct ProjectEntry {
     pub repos: Vec<RepoSlug>,
 }
 
+/// Longest a machine name may be: one DNS label.
+pub const MAX_MACHINE_NAME: usize = 63;
+
+/// Which of one person's machines a daemon connection comes from.
+///
+/// A host is a GitHub login, so two laptops signed in as the same person are
+/// one host. The router keeps one connection per machine, and this name is
+/// how it tells them apart: a connection from a machine it already holds
+/// replaces that one, and a connection from another machine is added beside
+/// it.
+///
+/// Sent by the daemon, so it is a label and never a credential. It cannot
+/// reach anyone else's rows — the host it is attached to is still the one the
+/// daemon's own token resolved to (rule 12) — and every limit stays keyed by
+/// the host, so naming more machines buys nothing.
+///
+/// 1–63 characters of `[a-z0-9-]`, starting alphanumeric: the `HostId` rule
+/// at the length of one DNS label, because it is usually a hostname and it
+/// renders in a terminal beside one. A `Deserialize` that routes through the
+/// same check (rule 45).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineName(String);
+
+impl MachineName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The machine name an OS hostname reads as: its first label, lowercased,
+    /// with every run of characters outside `[a-z0-9]` folded to one `-`, and
+    /// no `-` at either end. `None` when nothing is left.
+    ///
+    /// `Santiagos-MacBook-Pro.local` becomes `santiagos-macbook-pro`.
+    pub fn from_hostname(hostname: &str) -> Option<Self> {
+        let label = hostname.split('.').next().unwrap_or_default();
+        let mut name = String::with_capacity(label.len().min(MAX_MACHINE_NAME));
+        for c in label.chars() {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                name.push(c);
+            } else if !name.is_empty() && !name.ends_with('-') {
+                name.push('-');
+            }
+            if name.len() >= MAX_MACHINE_NAME {
+                break;
+            }
+        }
+        while name.ends_with('-') {
+            name.pop();
+        }
+        Self::try_from(name.as_str()).ok()
+    }
+}
+
+impl fmt::Display for MachineName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<MachineName> for String {
+    fn from(name: MachineName) -> Self {
+        name.0
+    }
+}
+
+impl TryFrom<&str> for MachineName {
+    type Error = ProtoError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let ok = (1..=MAX_MACHINE_NAME).contains(&value.len())
+            && value.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && value
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if ok {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(ProtoError::MachineName)
+        }
+    }
+}
+
+impl TryFrom<String> for MachineName {
+    type Error = ProtoError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerFrame {
@@ -305,6 +397,25 @@ pub enum ServerFrame {
     /// `{}` rather than a bare unit variant, for the reason on
     /// `ClientFrame::Projects`.
     RoomListRefused {},
+    /// Answers `ClientFrame::AskMachines`: one connected machine's answer,
+    /// exactly as `Report` carries it, plus which of the host's machines it
+    /// came from.
+    ///
+    /// `machine` is `None` for a daemon that never named one — a build from
+    /// before machine names — and for a host with nothing connected. One host
+    /// can have several of these per query, one per machine. `host` is still
+    /// the router's attribution, and the snapshot inside `state` still names
+    /// that host, so the reader's attribution check is unchanged (rule 21).
+    ///
+    /// A new variant rather than a field on `Report`, for the reason on
+    /// `Joined`. Only a reader that asked with `AskMachines` gets one, and a
+    /// reader built before it never asks.
+    MachineReport {
+        id: QueryId,
+        host: HostId,
+        machine: Option<MachineName>,
+        state: HostState,
+    },
 }
 
 /// One stored room message, as a backfill carries it: the same four fields
@@ -548,6 +659,33 @@ pub enum ClientFrame {
     /// must bound how long it waits for the answer. `{}` rather than a bare
     /// unit variant, for the reason on `Projects`.
     ListRooms {},
+    /// Names the machine this daemon connection comes from. Sent once, right
+    /// after `Welcome`; a second one on the same connection is ignored.
+    ///
+    /// The router keeps one connection per machine of a host. A connection
+    /// that names a machine the host already has connected replaces that
+    /// connection, which is how a laptop waking from sleep takes its old,
+    /// dead socket's place. A connection that never sends this — a daemon
+    /// built before it — keeps a slot of its own until its socket closes.
+    ///
+    /// A router built before this cannot decode it and ignores it, keeping
+    /// the socket, and then treats every connection of a host as the same
+    /// machine, as it always has.
+    Machine {
+        name: MachineName,
+    },
+    /// `Ask`, answered with one `ServerFrame::MachineReport` per machine
+    /// instead of one `Report`, so a reader can show which of a host's
+    /// machines each answer came from. Then `Partial` if anything was
+    /// withheld and `Complete`, exactly as for `Ask`.
+    ///
+    /// A router built before this cannot decode it and ignores it, so it never
+    /// answers. A reader that sends this sends `Projects` right behind it: a
+    /// router that answers `Projects` first skipped this request, and the
+    /// reader asks again with `Ask`.
+    AskMachines {
+        id: QueryId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -589,6 +727,8 @@ pub enum ProtoError {
     TooManyEvents(usize),
     #[error("room list carries {0} rooms, over the limit")]
     TooManyRooms(usize),
+    #[error("machine name must be 1-63 chars of [a-z0-9-], starting alphanumeric")]
+    MachineName,
     #[error("frame is not valid json for this protocol (line {line}, column {column})")]
     Json { line: usize, column: usize },
 }
@@ -2151,6 +2291,180 @@ mod tests {
                 "{frame:?}"
             );
         }
+    }
+
+    fn machine(name: &str) -> MachineName {
+        MachineName::try_from(name).unwrap()
+    }
+
+    fn machine_client_frames() -> Vec<ClientFrame> {
+        vec![
+            ClientFrame::Machine {
+                name: machine("work-laptop"),
+            },
+            ClientFrame::AskMachines { id: QueryId(1) },
+        ]
+    }
+
+    fn machine_server_frames() -> Vec<ServerFrame> {
+        vec![
+            ServerFrame::MachineReport {
+                id: QueryId(1),
+                host: host(),
+                machine: Some(machine("work-laptop")),
+                state: HostState::NotSharing {},
+            },
+            ServerFrame::MachineReport {
+                id: QueryId(1),
+                host: host(),
+                machine: None,
+                state: HostState::Unreachable {},
+            },
+        ]
+    }
+
+    /// Every `type` tag a v0.1.0 peer knows, from that release's own enums.
+    /// The machine frames must use none of them: an internally tagged enum
+    /// reads an unknown tag as a frame it cannot decode, which every v0.1.0
+    /// router, daemon and reader skips while keeping the socket.
+    const V0_1_0_CLIENT_TAGS: &[&str] = &[
+        "hello",
+        "ask",
+        "answer",
+        "events",
+        "projects",
+        "join",
+        "leave",
+        "post",
+        "backfill",
+        "list_rooms",
+    ];
+    const V0_1_0_SERVER_TAGS: &[&str] = &[
+        "welcome",
+        "query",
+        "report",
+        "complete",
+        "projects",
+        "partial",
+        "denied",
+        "joined",
+        "join_refused",
+        "left",
+        "message",
+        "post_refused",
+        "turn_capped",
+        "backfill",
+        "backfill_refused",
+        "room_list",
+        "room_list_refused",
+    ];
+
+    fn tag(json: &[u8]) -> String {
+        let value: serde_json::Value = serde_json::from_slice(json).unwrap();
+        value.get("type").unwrap().as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn the_machine_frames_use_tags_no_v0_1_0_peer_knows() {
+        for frame in machine_client_frames() {
+            let json = serde_json::to_vec(&frame).unwrap();
+            let tag = tag(&json);
+            assert!(!V0_1_0_CLIENT_TAGS.contains(&tag.as_str()), "{tag}");
+            assert!(
+                decode::<ClientFrameBeforeRooms>(&json).is_err(),
+                "{frame:?}"
+            );
+            assert_eq!(decode::<ClientFrame>(&json).unwrap(), frame);
+        }
+        for frame in machine_server_frames() {
+            let json = serde_json::to_vec(&frame).unwrap();
+            let tag = tag(&json);
+            assert!(!V0_1_0_SERVER_TAGS.contains(&tag.as_str()), "{tag}");
+            assert!(
+                decode::<ServerFrameBeforePartial>(&json).is_err(),
+                "{frame:?}"
+            );
+            assert_eq!(decode::<ServerFrame>(&json).unwrap(), frame);
+        }
+    }
+
+    #[test]
+    fn the_machine_frames_have_the_shapes_they_are_documented_with() {
+        assert_eq!(
+            serde_json::to_string(&ClientFrame::Machine {
+                name: machine("work-laptop")
+            })
+            .unwrap(),
+            r#"{"type":"machine","name":"work-laptop"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ClientFrame::AskMachines { id: QueryId(3) }).unwrap(),
+            r#"{"type":"ask_machines","id":3}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ServerFrame::MachineReport {
+                id: QueryId(3),
+                host: host(),
+                machine: None,
+                state: HostState::Unreachable {},
+            })
+            .unwrap(),
+            r#"{"type":"machine_report","id":3,"host":"sandbank","machine":null,"state":{"state":"unreachable"}}"#
+        );
+    }
+
+    #[test]
+    fn a_machine_frame_refuses_anything_riding_along_and_a_bad_name() {
+        assert!(decode::<ClientFrame>(br#"{"type":"machine","name":"a","x":1}"#).is_err());
+        assert!(decode::<ClientFrame>(br#"{"type":"machine","name":"Work Laptop"}"#).is_err());
+        assert!(decode::<ClientFrame>(br#"{"type":"machine","name":""}"#).is_err());
+        assert!(decode::<ClientFrame>(br#"{"type":"ask_machines","id":1,"x":1}"#).is_err());
+        assert!(
+            decode::<ServerFrame>(
+                br#"{"type":"machine_report","id":1,"host":"sandbank","machine":null,"state":{"state":"unreachable"},"x":1}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_machine_name_is_one_dns_label_of_the_host_id_charset() {
+        assert!(MachineName::try_from("work-laptop").is_ok());
+        assert!(MachineName::try_from("7").is_ok());
+        assert!(MachineName::try_from("a".repeat(MAX_MACHINE_NAME).as_str()).is_ok());
+        assert!(MachineName::try_from("a".repeat(MAX_MACHINE_NAME + 1).as_str()).is_err());
+        assert!(MachineName::try_from("-laptop").is_err());
+        assert!(MachineName::try_from("Laptop").is_err());
+        assert!(MachineName::try_from("lap.top").is_err());
+        assert!(MachineName::try_from("lap\u{202e}top").is_err());
+    }
+
+    #[test]
+    fn a_hostname_is_folded_into_a_machine_name() {
+        let cases = [
+            ("Santiagos-MacBook-Pro.local", Some("santiagos-macbook-pro")),
+            ("build_box_01", Some("build-box-01")),
+            ("--odd  name--", Some("odd-name")),
+            ("WORK", Some("work")),
+            ("caf\u{e9}-mac", Some("caf-mac")),
+            ("", None),
+            ("...", None),
+            ("___", None),
+        ];
+        for (hostname, expected) in cases {
+            assert_eq!(
+                MachineName::from_hostname(hostname)
+                    .as_ref()
+                    .map(MachineName::as_str),
+                expected,
+                "{hostname:?}"
+            );
+        }
+        let long = MachineName::from_hostname(&"x".repeat(200)).unwrap();
+        assert_eq!(long.as_str().len(), MAX_MACHINE_NAME);
+        // A cut that lands on a separator does not leave a trailing `-`.
+        let cut = MachineName::from_hostname(&format!("{}-b", "a".repeat(62))).unwrap();
+        assert_eq!(cut.as_str(), "a".repeat(62));
     }
 
     #[test]

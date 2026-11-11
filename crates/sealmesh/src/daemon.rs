@@ -5,7 +5,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use jiff::Timestamp;
-use sealmesh_proto::{ClientFrame, EventBatch, HostState, MAX_EVENTS_PER_BATCH, Role, ServerFrame};
+use sealmesh_proto::{
+    ClientFrame, EventBatch, HostState, MAX_EVENTS_PER_BATCH, MachineName, Role, ServerFrame,
+};
 use sealmesh_wire::HostId;
 use tokio::sync::mpsc;
 
@@ -265,7 +267,14 @@ pub async fn run(config: &Config) -> Result<()> {
 
 async fn session(config: &Config, watch: &mut Watch, rooms: &mut Rooms) -> Result<()> {
     let Connected { socket, host } = client::connect(&config.server, Role::Daemon).await?;
-    eprintln!("connected as {host}");
+    let machine = config.machine_name();
+    match &machine {
+        Some(machine) => eprintln!("connected as {host} from {machine}"),
+        None => eprintln!(
+            "connected as {host}. This machine's hostname does not make a machine name, so \
+             the router cannot tell it from your other machines: set `machine` in the config"
+        ),
+    }
     let collect = |host: &HostId| match state_now(config, host, Timestamp::now()) {
         Ok(state) => state,
         Err(error) => {
@@ -273,7 +282,7 @@ async fn session(config: &Config, watch: &mut Watch, rooms: &mut Rooms) -> Resul
             HostState::Unreachable {}
         }
     };
-    serve(socket, host, config, watch, rooms, collect).await
+    serve(socket, host, machine, config, watch, rooms, collect).await
 }
 
 /// Runs one router connection until it ends. `collect` answers a query that
@@ -287,17 +296,26 @@ async fn session(config: &Config, watch: &mut Watch, rooms: &mut Rooms) -> Resul
 /// it polls the router's socket first on each turn of the loop, so a `Query`
 /// that has already arrived tends to be read ahead of queued local requests.
 /// No test pins that ordering.
+///
+/// `machine` goes out first, before the rejoins: the router keeps one
+/// connection per machine of a host, and this is how it knows this connection
+/// takes the place of the one this machine had before.
 async fn serve(
     mut socket: Socket,
     host: HostId,
+    machine: Option<MachineName>,
     config: &Config,
     watch: &mut Watch,
     rooms: &mut Rooms,
     collect: impl Fn(&HostId) -> HostState,
 ) -> Result<()> {
-    let rejoin = rooms.client.on_connect(host.clone(), Instant::now());
+    let mut first = Vec::new();
+    if let Some(name) = machine {
+        first.push(ClientFrame::Machine { name });
+    }
+    first.extend(rooms.client.on_connect(host.clone(), Instant::now()));
     let result = async {
-        send_all(&mut socket, rejoin).await?;
+        send_all(&mut socket, first).await?;
         serve_connected(&mut socket, &host, config, watch, rooms, collect).await
     }
     .await;
@@ -1040,7 +1058,17 @@ mod tests {
 
         /// Runs `serve` for every connection handed to it, in order, with one
         /// `Rooms` across all of them, the way `run` does across reconnects.
-        fn daemon(mut rooms: Rooms, config: Config) -> mpsc::UnboundedSender<Socket> {
+        /// Names no machine, like a daemon whose hostname makes none.
+        fn daemon(rooms: Rooms, config: Config) -> mpsc::UnboundedSender<Socket> {
+            daemon_on(rooms, config, None)
+        }
+
+        /// [`daemon`], naming `machine` on every connection.
+        fn daemon_on(
+            mut rooms: Rooms,
+            config: Config,
+            machine: Option<MachineName>,
+        ) -> mpsc::UnboundedSender<Socket> {
             let (tx, mut sockets) = mpsc::unbounded_channel::<Socket>();
             tokio::spawn(async move {
                 let mut watch = Watch::new();
@@ -1048,6 +1076,7 @@ mod tests {
                     let _ = serve(
                         socket,
                         host("sandbank"),
+                        machine.clone(),
                         &config,
                         &mut watch,
                         &mut rooms,
@@ -1372,6 +1401,54 @@ mod tests {
                     .is_err()
             );
             router.task.abort();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn every_connection_names_its_machine_first_and_still_answers() {
+            let (rooms, local) = rooms("m", Timing::default(), Arc::new(AtomicBool::new(true)));
+            let laptop = MachineName::try_from("laptop").unwrap();
+            let daemon = daemon_on(rooms, config(&local.root), Some(laptop.clone()));
+
+            let (socket, ws) = connection().await;
+            let mut first = FakeRouter::spawn(ws);
+            daemon.send(socket).unwrap();
+            assert_eq!(
+                first.next_any().await,
+                ClientFrame::Machine {
+                    name: laptop.clone()
+                }
+            );
+            join(&local, &mut first, ticket(1)).await;
+
+            // The router goes away, and the next connection names the same
+            // machine before it rejoins anything, so the router can let it
+            // take the old connection's place.
+            drop(first.out);
+            first.task.await.unwrap();
+
+            let (socket, ws) = connection().await;
+            let mut second = FakeRouter::spawn(ws);
+            daemon.send(socket).unwrap();
+            assert_eq!(
+                second.next_any().await,
+                ClientFrame::Machine { name: laptop }
+            );
+            assert_eq!(
+                second.next_any().await,
+                ClientFrame::Join { room: ticket(1) }
+            );
+
+            second.send(ServerFrame::Query {
+                id: QueryId(3),
+                asked_by: host("shelter"),
+            });
+            loop {
+                if let ClientFrame::Answer { id, state } = second.next().await {
+                    assert_eq!((id, state), (QueryId(3), HostState::NotSharing {}));
+                    break;
+                }
+            }
+            second.task.abort();
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

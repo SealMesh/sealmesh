@@ -36,11 +36,13 @@ const DEFAULT_ACCESS_CACHE_TTL_SECS: u64 = 30;
 /// are already invisible to every read; this only reclaims the space.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// The command line: `sealmesh-server [--config PATH] [healthcheck]`.
+/// The command line: `sealmesh-server [--config PATH] [healthcheck]`, or
+/// `sealmesh-server --version`.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Args {
     config: Option<PathBuf>,
     healthcheck: bool,
+    version: bool,
 }
 
 impl Args {
@@ -54,8 +56,10 @@ impl Args {
                     parsed.config = Some(PathBuf::from(path));
                 }
                 "healthcheck" => parsed.healthcheck = true,
+                "--version" | "-V" => parsed.version = true,
                 other => bail!(
-                    "unknown argument {other:?}. Usage: sealmesh-server [--config PATH] [healthcheck]"
+                    "unknown argument {other:?}. Usage: sealmesh-server [--config PATH] \
+                     [healthcheck] | --version"
                 ),
             }
         }
@@ -221,9 +225,19 @@ async fn healthcheck(config: &ServerConfig) -> Result<()> {
     }
 }
 
+/// What `--version` prints.
+fn version_line() -> String {
+    format!("sealmesh-server {}", env!("CARGO_PKG_VERSION"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse(std::env::args().skip(1))?;
+    // Before the config is read, so it answers on a machine with none.
+    if args.version {
+        println!("{}", version_line());
+        return Ok(());
+    }
     let config = load_config(&args)?;
     if args.healthcheck {
         return healthcheck(&config).await;
@@ -407,6 +421,7 @@ mod tests {
         let both = Args {
             config: Some(PathBuf::from("/etc/sealmesh-server.toml")),
             healthcheck: true,
+            version: false,
         };
         assert_eq!(
             args(&["--config", "/etc/sealmesh-server.toml", "healthcheck"]).unwrap(),
@@ -416,6 +431,19 @@ mod tests {
             args(&["healthcheck", "--config", "/etc/sealmesh-server.toml"]).unwrap(),
             both
         );
+    }
+
+    #[test]
+    fn the_version_flag_is_read_in_both_spellings() {
+        for flag in ["--version", "-V"] {
+            assert!(args(&[flag]).unwrap().version, "{flag}");
+        }
+        assert!(!args(&[]).unwrap().version);
+        assert_eq!(
+            version_line(),
+            format!("sealmesh-server {}", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(args(&["--Version"]).is_err());
     }
 
     #[test]

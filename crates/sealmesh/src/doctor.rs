@@ -13,6 +13,7 @@ pub async fn run(config: &Config) -> Result<()> {
     println!("integration       origin/{}", config.integration_branch);
     println!("ticket rooms      {}", ticket_rooms_line(config));
     println!("host              derived from your GitHub login at connect");
+    println!("machine           {}", machine_line(config));
 
     let killed = crate::daemon::is_off();
     match Config::off_switch_path() {
@@ -150,6 +151,17 @@ fn ticket_rooms_line(config: &Config) -> String {
         "off (no ticket_prefixes)".to_owned()
     } else {
         format!("on (prefixes {})", config.ticket_prefixes.join(", "))
+    }
+}
+
+/// Which machine name this daemon gives the router, and where it came from.
+fn machine_line(config: &Config) -> String {
+    match (&config.machine, config.machine_name()) {
+        (Some(name), _) => format!("{name} (machine in the config)"),
+        (None, Some(name)) => format!("{name} (from this machine's hostname)"),
+        (None, None) => "none — the hostname makes no machine name, so the router cannot tell \
+                         this machine from your others. Set `machine` in the config"
+            .to_owned(),
     }
 }
 
@@ -350,6 +362,13 @@ mod tests {
         "#
         );
         toml::from_str(&toml).unwrap()
+    }
+
+    #[test]
+    fn the_doctor_machine_line_says_where_the_name_came_from() {
+        let mut config = config_with_chat(false);
+        config.machine = Some(sealmesh_proto::MachineName::try_from("work-laptop").unwrap());
+        assert_eq!(machine_line(&config), "work-laptop (machine in the config)");
     }
 
     #[test]

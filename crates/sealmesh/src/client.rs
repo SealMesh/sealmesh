@@ -57,6 +57,12 @@ pub async fn connect(config: &ServerConfig, role: Role) -> Result<Connected> {
 /// (see the proto crate's tests) but renders the same way.
 pub async fn request_projects(socket: &mut Socket) -> Result<Option<Vec<ProjectEntry>>> {
     send(socket, &ClientFrame::Projects {}).await?;
+    await_projects(socket).await
+}
+
+/// Waits for the reply to a `ClientFrame::Projects` already sent, bounded the
+/// way [`request_projects`] is. Every other frame is skipped.
+pub async fn await_projects(socket: &mut Socket) -> Result<Option<Vec<ProjectEntry>>> {
     match within(PROJECTS_TIMEOUT, wait_for_projects(socket)).await {
         Some(result) => result.map(Some),
         None => Ok(None),

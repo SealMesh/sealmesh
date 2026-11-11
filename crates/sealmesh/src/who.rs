@@ -2,7 +2,9 @@ use std::{collections::BTreeSet, ops::ControlFlow};
 
 use anyhow::{Context, Result};
 use jiff::Timestamp;
-use sealmesh_proto::{ClientFrame, HostState, ProjectEntry, QueryId, Role, ServerFrame};
+use sealmesh_proto::{
+    ClientFrame, HostState, MachineName, ProjectEntry, QueryId, Role, ServerFrame,
+};
 
 use crate::{
     client::{self, Connected},
@@ -21,6 +23,23 @@ pub enum HostReport {
     Unreadable { host: String, reason: String },
 }
 
+/// One row of the answer: a host's report, and which of its machines it came
+/// from. `machine` is `None` from a router or daemon built before machine
+/// names, and for a host with nothing connected.
+pub struct Row {
+    pub machine: Option<MachineName>,
+    pub report: HostReport,
+}
+
+impl From<HostReport> for Row {
+    fn from(report: HostReport) -> Self {
+        Self {
+            machine: None,
+            report,
+        }
+    }
+}
+
 /// What one query came back with. `undecodable` counts answers this build could
 /// not read at all — the host they belonged to is unknowable, because the
 /// failure happens before the frame's `host` field can be recovered, so they
@@ -37,7 +56,7 @@ pub enum HostReport {
 /// machine, which repo or how much — and it is what keeps a narrowed answer
 /// from reading as a quiet fleet.
 pub struct Answers {
-    pub reports: Vec<HostReport>,
+    pub reports: Vec<Row>,
     pub undecodable: usize,
     pub projects: Vec<ProjectEntry>,
     pub partial: bool,
@@ -64,23 +83,44 @@ pub async fn fetch_all(config: &Config, progress: &Progress) -> Result<Answers> 
 /// query with an error: a caller that has to bound how many machines it will
 /// hold in memory stops here, before the next report is kept, because the
 /// router sending the reports is a service that can itself be compromised.
+///
+/// # Asking by machine, on any router
+///
+/// It asks with `AskMachines`, so each row says which of a host's machines it
+/// came from, and sends the project map request right behind it. A router
+/// processes one reader frame at a time, which makes the second request a
+/// fence: a router that knows `AskMachines` answers it in full before it gets
+/// to `Projects`, and a router built before it skips it and answers
+/// `Projects` first. So a `Projects` reply arriving before any answer means
+/// the question went unheard, and it is asked again with `Ask` — with no
+/// timeout to wait out and no fan-out run twice.
 pub async fn ask(
     mut socket: client::Socket,
     mut on_phase: impl FnMut(Phase) -> ControlFlow<()>,
 ) -> Result<Answers> {
-    let projects = client::request_projects(&mut socket)
-        .await?
-        .unwrap_or_default();
-
     let id = QueryId(1);
     if on_phase(Phase::Asking { answered: 0 }).is_break() {
         anyhow::bail!("the query was abandoned before it was asked");
     }
-    client::send(&mut socket, &ClientFrame::Ask { id }).await?;
+    client::send(&mut socket, &ClientFrame::AskMachines { id }).await?;
+    client::send(&mut socket, &ClientFrame::Projects {}).await?;
 
     let mut collected = Collected::default();
+    let mut heard = false;
+    let mut projects: Option<Vec<ProjectEntry>> = None;
     loop {
         let incoming = client::recv(&mut socket).await?;
+        if let client::Incoming::Frame(ServerFrame::Projects { projects: map }) = incoming {
+            if !heard {
+                // The fence came back first: this router skipped
+                // `AskMachines`. Ask the way it understands.
+                heard = true;
+                client::send(&mut socket, &ClientFrame::Ask { id }).await?;
+            }
+            projects.get_or_insert(map);
+            continue;
+        }
+        heard |= answers(id, &incoming);
         let answered = collected.reports.len();
         match fold(id, &mut collected, incoming) {
             Folded::Reading => {
@@ -102,6 +142,14 @@ pub async fn ask(
                     undecodable,
                     partial,
                 } = collected;
+                // A router that answered `AskMachines` gets to `Projects`
+                // only now. Bounded, like any wait for the map.
+                let projects = match projects {
+                    Some(projects) => projects,
+                    None => client::await_projects(&mut socket)
+                        .await?
+                        .unwrap_or_default(),
+                };
                 return Ok(Answers {
                     reports,
                     undecodable,
@@ -117,10 +165,24 @@ pub async fn ask(
     }
 }
 
+/// Whether `incoming` is part of the router's answer to query `id`, which
+/// tells the reader the router heard the question.
+fn answers(id: QueryId, incoming: &client::Incoming) -> bool {
+    match incoming {
+        client::Incoming::Frame(
+            ServerFrame::Report { id: reported, .. }
+            | ServerFrame::MachineReport { id: reported, .. }
+            | ServerFrame::Partial { id: reported }
+            | ServerFrame::Complete { id: reported },
+        ) => *reported == id,
+        _ => false,
+    }
+}
+
 /// What one query has gathered so far.
 #[derive(Default)]
 struct Collected {
-    reports: Vec<HostReport>,
+    reports: Vec<Row>,
     undecodable: usize,
     partial: bool,
 }
@@ -155,7 +217,21 @@ fn fold(id: QueryId, collected: &mut Collected, incoming: client::Incoming) -> F
             host,
             state,
         } if reported == id => {
-            collected.reports.push(interpret(host, state));
+            collected.reports.push(interpret(host, state).into());
+            Folded::Reading
+        }
+        // The same answer with its machine: what a router sends for
+        // `AskMachines`. The attribution check is the same one.
+        ServerFrame::MachineReport {
+            id: reported,
+            host,
+            machine,
+            state,
+        } if reported == id => {
+            collected.reports.push(Row {
+                machine,
+                report: interpret(host, state),
+            });
             Folded::Reading
         }
         // The router withheld work this login cannot read. Held until the
@@ -186,10 +262,10 @@ fn interpret(attributed: sealmesh_wire::HostId, state: HostState) -> HostReport 
     }
 }
 
-pub fn referenced_prs(reports: &[HostReport]) -> Vec<(RepoSlug, u32)> {
+pub fn referenced_prs(reports: &[Row]) -> Vec<(RepoSlug, u32)> {
     let mut seen: BTreeSet<(RepoSlug, u32)> = BTreeSet::new();
     for entry in reports {
-        let HostReport::Answering(snapshot) = entry else {
+        let HostReport::Answering(snapshot) = &entry.report else {
             continue;
         };
         for agent in &snapshot.agents {
@@ -201,8 +277,10 @@ pub fn referenced_prs(reports: &[HostReport]) -> Vec<(RepoSlug, u32)> {
     seen.into_iter().collect()
 }
 
+/// The rows as `who` prints them. A row with a machine is labelled
+/// `host@machine`, so one person's machines read as theirs and apart.
 pub fn present(
-    reports: &[HostReport],
+    reports: &[Row],
     projects: &[ProjectEntry],
     prs: &PrStatuses,
     now: Timestamp,
@@ -211,15 +289,19 @@ pub fn present(
 ) -> String {
     let statuses: Vec<HostStatus<'_>> = reports
         .iter()
-        .map(|entry| match entry {
-            HostReport::Answering(snapshot) => HostStatus::Answering(snapshot),
-            HostReport::NotSharing { host } => HostStatus::NotSharing { host: host.clone() },
-            HostReport::Unreachable { host } => HostStatus::Unreachable { host: host.clone() },
-            HostReport::Throttled { host } => HostStatus::Throttled { host: host.clone() },
-            HostReport::Unreadable { host, reason } => HostStatus::Unreadable {
-                host: host.clone(),
-                reason: reason.clone(),
-            },
+        .map(|Row { machine, report }| {
+            let machine = machine.as_ref().map(MachineName::as_str);
+            let label = |host: &str| render::host_label(host, machine);
+            match report {
+                HostReport::Answering(snapshot) => HostStatus::Answering(snapshot, machine),
+                HostReport::NotSharing { host } => HostStatus::NotSharing { host: label(host) },
+                HostReport::Unreachable { host } => HostStatus::Unreachable { host: label(host) },
+                HostReport::Throttled { host } => HostStatus::Throttled { host: label(host) },
+                HostReport::Unreadable { host, reason } => HostStatus::Unreadable {
+                    host: label(host),
+                    reason: reason.clone(),
+                },
+            }
         })
         .collect();
     render::render_answer(&statuses, projects, prs, now, color, partial)
@@ -227,7 +309,7 @@ pub fn present(
 
 /// Everything the query produced, held until the progress line is gone.
 struct Gathered {
-    reports: Vec<HostReport>,
+    reports: Vec<Row>,
     undecodable: usize,
     projects: Vec<ProjectEntry>,
     partial: bool,
@@ -294,6 +376,240 @@ mod tests {
     use super::*;
     use sealmesh_wire::HostId;
 
+    fn rows(reports: Vec<HostReport>) -> Vec<Row> {
+        reports.into_iter().map(Row::from).collect()
+    }
+
+    fn machine(name: &str) -> MachineName {
+        MachineName::try_from(name).unwrap()
+    }
+
+    fn now() -> Timestamp {
+        "2026-08-10T19:57:01.322Z".parse().unwrap()
+    }
+
+    #[test]
+    fn a_machine_report_keeps_its_machine_and_its_attribution_check() {
+        let id = QueryId(1);
+        let mut collected = Collected::default();
+        for incoming in [
+            frame(ServerFrame::MachineReport {
+                id,
+                host: host("sandbank"),
+                machine: Some(machine("laptop")),
+                state: HostState::Answering {
+                    snapshot: snapshot("sandbank"),
+                },
+            }),
+            frame(ServerFrame::MachineReport {
+                id,
+                host: host("sandbank"),
+                machine: Some(machine("desktop")),
+                state: HostState::Unreachable {},
+            }),
+            // Attributed to `shelter`, claiming to be `sandbank` (rule 21).
+            frame(ServerFrame::MachineReport {
+                id,
+                host: host("shelter"),
+                machine: Some(machine("laptop")),
+                state: HostState::Answering {
+                    snapshot: snapshot("sandbank"),
+                },
+            }),
+        ] {
+            assert!(matches!(
+                fold(id, &mut collected, incoming),
+                Folded::Reading
+            ));
+        }
+        assert!(matches!(
+            fold(id, &mut collected, frame(ServerFrame::Complete { id })),
+            Folded::Complete
+        ));
+
+        let out = present(
+            &collected.reports,
+            &[],
+            &PrStatuses::new(),
+            now(),
+            false,
+            false,
+        );
+        assert!(out.contains("sandbank@laptop — 0 agents"), "{out}");
+        assert!(out.contains("sandbank@desktop — unreachable"), "{out}");
+        assert!(out.contains("shelter@laptop — unreadable"), "{out}");
+        assert!(!out.contains("sandbank@laptop — unreadable"), "{out}");
+    }
+
+    #[test]
+    fn a_row_without_a_machine_reads_exactly_as_before() {
+        let out = present(
+            &rows(vec![
+                HostReport::Answering(snapshot("sandbank")),
+                HostReport::Unreachable {
+                    host: "shelter".to_owned(),
+                },
+            ]),
+            &[],
+            &PrStatuses::new(),
+            now(),
+            false,
+            false,
+        );
+        assert!(out.contains("sandbank — 0 agents"), "{out}");
+        assert!(out.contains("shelter — unreachable"), "{out}");
+        assert!(!out.contains('@'), "{out}");
+    }
+
+    /// A router on a local socket. `answer` gets each frame the reader sends,
+    /// decoded, and returns what to send back.
+    async fn fake_router(
+        answer: impl Fn(ClientFrame) -> Vec<ServerFrame> + Send + 'static,
+    ) -> client::Socket {
+        use futures_util::{SinkExt as _, StreamExt as _};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                // What a router does with a frame it cannot decode: nothing.
+                let Ok(frame) = sealmesh_proto::decode::<ClientFrame>(text.as_bytes()) else {
+                    continue;
+                };
+                for reply in answer(frame) {
+                    let text = serde_json::to_string(&reply).unwrap();
+                    if ws.send(Message::Text(text.into())).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, false)
+            .await
+            .unwrap()
+            .0
+    }
+
+    fn map() -> Vec<ProjectEntry> {
+        vec![ProjectEntry {
+            id: sealmesh_wire::ProjectId::try_from("sealmesh").unwrap(),
+            repos: vec![RepoSlug::try_from("example-org/sealmesh").unwrap()],
+        }]
+    }
+
+    fn counter() -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    #[tokio::test]
+    async fn a_router_that_knows_machines_is_asked_once_and_names_each_machine() {
+        let asks = counter();
+        let counted = asks.clone();
+        let socket = fake_router(move |frame| match frame {
+            ClientFrame::AskMachines { id } => {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                vec![
+                    ServerFrame::MachineReport {
+                        id,
+                        host: host("sandbank"),
+                        machine: Some(machine("desktop")),
+                        state: HostState::NotSharing {},
+                    },
+                    ServerFrame::MachineReport {
+                        id,
+                        host: host("sandbank"),
+                        machine: Some(machine("laptop")),
+                        state: HostState::Answering {
+                            snapshot: snapshot("sandbank"),
+                        },
+                    },
+                    ServerFrame::Complete { id },
+                ]
+            }
+            ClientFrame::Projects {} => vec![ServerFrame::Projects { projects: map() }],
+            ClientFrame::Ask { .. } => {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        })
+        .await;
+
+        let answers = ask(socket, |_| ControlFlow::Continue(())).await.unwrap();
+        assert_eq!(
+            answers.projects,
+            map(),
+            "the map still arrives, after the rows"
+        );
+        let machines: Vec<Option<&str>> = answers
+            .reports
+            .iter()
+            .map(|row| row.machine.as_ref().map(MachineName::as_str))
+            .collect();
+        assert_eq!(machines, vec![Some("desktop"), Some("laptop")]);
+        assert_eq!(
+            asks.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one question, one fan-out"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_router_from_before_machines_is_asked_again_the_old_way() {
+        // A v0.1.0 router: it cannot decode `AskMachines`, so it skips it and
+        // answers the `Projects` behind it first.
+        let asks = counter();
+        let counted = asks.clone();
+        let socket = fake_router(move |frame| match frame {
+            ClientFrame::Ask { id } => {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                vec![
+                    ServerFrame::Report {
+                        id,
+                        host: host("sandbank"),
+                        state: HostState::Answering {
+                            snapshot: snapshot("sandbank"),
+                        },
+                    },
+                    ServerFrame::Report {
+                        id,
+                        host: host("sandbank"),
+                        state: HostState::NotSharing {},
+                    },
+                    ServerFrame::Complete { id },
+                ]
+            }
+            ClientFrame::Projects {} => vec![ServerFrame::Projects { projects: map() }],
+            _ => Vec::new(),
+        })
+        .await;
+
+        let answers = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            ask(socket, |_| ControlFlow::Continue(())),
+        )
+        .await
+        .expect("the reader waited on a question the router never heard")
+        .unwrap();
+        assert_eq!(answers.projects, map());
+        assert_eq!(answers.reports.len(), 2, "the host once per machine");
+        assert!(answers.reports.iter().all(|row| row.machine.is_none()));
+        assert_eq!(asks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let out = present(
+            &answers.reports,
+            &answers.projects,
+            &PrStatuses::new(),
+            now(),
+            false,
+            false,
+        );
+        assert!(out.contains("sandbank — 0 agents"), "{out}");
+        assert!(out.contains("sandbank — not sharing"), "{out}");
+    }
+
     fn snapshot(host: &str) -> Box<Snapshot> {
         Box::new(
             Snapshot::from_json(
@@ -320,7 +636,7 @@ mod tests {
             },
         );
         let out = present(
-            &[report],
+            &[report.into()],
             &[],
             &PrStatuses::new(),
             "2026-08-10T19:57:01.322Z".parse().unwrap(),
@@ -345,13 +661,13 @@ mod tests {
 
     #[test]
     fn one_unreadable_answer_does_not_hide_the_other_machine() {
-        let reports = vec![
+        let reports = rows(vec![
             HostReport::Answering(snapshot("sandbank")),
             HostReport::Unreadable {
                 host: "shelter".to_owned(),
                 reason: "answer is not valid json for this schema (line 1, column 4)".to_owned(),
             },
-        ];
+        ]);
         let out = present(
             &reports,
             &[],
@@ -458,12 +774,12 @@ mod tests {
 
     #[test]
     fn a_partial_answer_is_presented_with_its_notice_and_a_complete_one_without() {
-        let reports = vec![interpret(
+        let reports = rows(vec![interpret(
             host("sandbank"),
             HostState::Answering {
                 snapshot: snapshot("sandbank"),
             },
-        )];
+        )]);
         let now = "2026-08-10T19:57:01.322Z".parse().unwrap();
 
         let partial = present(&reports, &[], &PrStatuses::new(), now, false, true);
@@ -476,10 +792,10 @@ mod tests {
 
     #[test]
     fn the_transport_states_map_to_distinct_rows() {
-        let reports = vec![
+        let reports = rows(vec![
             interpret(host("a"), HostState::Unreachable {}),
             interpret(host("b"), HostState::NotSharing {}),
-        ];
+        ]);
         let out = present(
             &reports,
             &[],
@@ -498,7 +814,7 @@ mod tests {
         assert!(matches!(&report, HostReport::Throttled { host } if host == "shelter"));
 
         let out = present(
-            &[report],
+            &[report.into()],
             &[],
             &PrStatuses::new(),
             "2026-08-10T19:57:01.322Z".parse().unwrap(),
