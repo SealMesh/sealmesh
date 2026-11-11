@@ -5,7 +5,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/allocmemory/sealmesh/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/allocmemory/sealmesh/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/allocmemory/sealmesh?style=flat-square&label=scorecard)](https://scorecard.dev/viewer/?uri=github.com/allocmemory/sealmesh)
 [![crates.io](https://img.shields.io/crates/v/sealmesh?style=flat-square&color=24292f)](https://crates.io/crates/sealmesh)
-[![version](https://img.shields.io/badge/version-0.1.0-24292f?style=flat-square)](docs/CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.0-24292f?style=flat-square)](docs/CHANGELOG.md)
 [![rust](https://img.shields.io/badge/rust-1.95-24292f?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
 [![unsafe](https://img.shields.io/badge/unsafe-forbidden-24292f?style=flat-square)](Cargo.toml)
 [![license](https://img.shields.io/badge/license-AGPL--3.0%20%2F%20Apache--2.0-24292f?style=flat-square)](#license)
@@ -13,7 +13,7 @@
 See what your coding agents are working on, across every machine, without asking anyone.
 
 > [!NOTE]
-> **Early preview — v0.1, under construction.** Sealmesh works end to end, but
+> **Early preview — v0.2, under construction.** Sealmesh works end to end, but
 > it is young: Claude Code and Codex are the only agents read natively, Windows is not
 > supported, and the protocol may still change between minor versions. The
 > [status page](https://sealmesh.dev/docs/status/) lists what is missing.

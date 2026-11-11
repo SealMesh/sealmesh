@@ -39,3 +39,10 @@ allow-dirty = ["ci"]
 "actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
 "actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7
 "actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8
+
+# GitHub retired the macos-14 arm64 image for this account ("configuration
+# 'macos-14-arm64-us-default' is not supported"), which cancelled the first
+# v0.2.0 release run before anything was published. Pin the Apple Silicon
+# build to a supported image.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
