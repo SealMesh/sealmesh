@@ -97,7 +97,11 @@ fn github_origin(repo: &gix::Repository) -> Option<RepoSlug> {
     let url = remote.url(gix::remote::Direction::Fetch)?;
     match url.scheme {
         gix::url::Scheme::Ssh | gix::url::Scheme::Https | gix::url::Scheme::Git => {}
-        gix::url::Scheme::File | gix::url::Scheme::Http | gix::url::Scheme::Ext(_) => {
+        gix::url::Scheme::File
+        | gix::url::Scheme::Http
+        | gix::url::Scheme::Ext
+        | gix::url::Scheme::Helper(_)
+        | gix::url::Scheme::HelperUrl(_) => {
             return None;
         }
     }
