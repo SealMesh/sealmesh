@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      IMAGE: ghcr.io/sealmesh/sealmesh-server
+      IMAGE: ghcr.io/allocmemory/sealmesh-server
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -37,7 +37,7 @@ jobs:
       - name: Build
         run: |
           docker build \
-            --label org.opencontainers.image.source=https://github.com/SealMesh/sealmesh \
+            --label org.opencontainers.image.source=https://github.com/allocmemory/sealmesh \
             --label org.opencontainers.image.licenses=AGPL-3.0-only \
             --label org.opencontainers.image.version=${{ steps.version.outputs.version }} \
             -t "$IMAGE:${{ steps.version.outputs.version }}" -t "$IMAGE:latest" .

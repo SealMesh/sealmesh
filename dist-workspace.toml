@@ -10,7 +10,7 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell", "homebrew"]
 # A GitHub repo to push Homebrew formulas to
-tap = "SealMesh/homebrew-tap"
+tap = "allocmemory/homebrew-tap"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew", "./publish-crates", "./publish-image"]
 # Target platforms to build apps for (Rust target-triple syntax)

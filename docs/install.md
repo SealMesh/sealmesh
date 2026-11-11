@@ -53,16 +53,16 @@ it off at any time with one file. Both are below.
 From the first release, any of:
 
 ```sh
-brew install sealmesh/tap/sealmesh sealmesh/tap/sealmesh-mcp
+brew install allocmemory/tap/sealmesh allocmemory/tap/sealmesh-mcp
 cargo install --locked sealmesh sealmesh-mcp
-# or a prebuilt binary from https://github.com/SealMesh/sealmesh/releases
+# or a prebuilt binary from https://github.com/allocmemory/sealmesh/releases
 ```
 
 From source, with Rust 1.95 or newer (`rustup toolchain install 1.95.0` — the
 repo pins it):
 
 ```sh
-git clone https://github.com/SealMesh/sealmesh.git
+git clone https://github.com/allocmemory/sealmesh.git
 cd sealmesh
 cargo install --locked --path crates/sealmesh
 cargo install --locked --path crates/sealmesh-mcp
@@ -517,7 +517,7 @@ docker run -d --name sealmesh-server -p 127.0.0.1:8787:8787 \
   -v "$PWD/sealmesh-server.toml:/etc/sealmesh/sealmesh-server.toml:ro" \
   -e SEALMESH_CONFIG=/etc/sealmesh/sealmesh-server.toml \
   -e SEALMESH_TLS_TERMINATED_BY=caddy \
-  ghcr.io/sealmesh/sealmesh-server:latest
+  ghcr.io/allocmemory/sealmesh-server:latest
 docker exec sealmesh-server sealmesh-server healthcheck
 ```
 

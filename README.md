@@ -2,8 +2,8 @@
 
 `read-only · answered live · no agent data stored`
 
-[![CI](https://img.shields.io/github/actions/workflow/status/SealMesh/sealmesh/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/SealMesh/sealmesh/actions/workflows/ci.yml)
-[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/SealMesh/sealmesh?style=flat-square&label=scorecard)](https://scorecard.dev/viewer/?uri=github.com/SealMesh/sealmesh)
+[![CI](https://img.shields.io/github/actions/workflow/status/allocmemory/sealmesh/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/allocmemory/sealmesh/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/allocmemory/sealmesh?style=flat-square&label=scorecard)](https://scorecard.dev/viewer/?uri=github.com/allocmemory/sealmesh)
 [![crates.io](https://img.shields.io/crates/v/sealmesh?style=flat-square&color=24292f)](https://crates.io/crates/sealmesh)
 [![version](https://img.shields.io/badge/version-0.1.0-24292f?style=flat-square)](docs/CHANGELOG.md)
 [![rust](https://img.shields.io/badge/rust-1.95-24292f?style=flat-square&logo=rust&logoColor=white)](rust-toolchain.toml)
@@ -275,7 +275,7 @@ brings a second TLS stack along.
 
 The router is one process and one SQLite file holding room chat for 7 days and
 nothing else — no snapshot and no bucket. Run it anywhere: the binary, or the
-image at `ghcr.io/sealmesh/sealmesh-server`, multi-stage — a `rust:1.95-slim`
+image at `ghcr.io/allocmemory/sealmesh-server`, multi-stage — a `rust:1.95-slim`
 build stage and a `gcr.io/distroless/cc-debian12:nonroot` runtime that carries
 the binary and a CA bundle and nothing else. Run exactly **one** router per
 organization: the connection registry is in-process, so a second instance would
@@ -295,20 +295,20 @@ GitHub org is what grants access.
 Install the CLI and the MCP server with any of (macOS and Linux):
 
 ```sh
-brew install sealmesh/tap/sealmesh sealmesh/tap/sealmesh-mcp   # Homebrew
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/SealMesh/sealmesh/releases/latest/download/sealmesh-installer.sh | sh
+brew install allocmemory/tap/sealmesh allocmemory/tap/sealmesh-mcp   # Homebrew
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/allocmemory/sealmesh/releases/latest/download/sealmesh-installer.sh | sh
 cargo install --locked sealmesh sealmesh-mcp
 ```
 
-Prebuilt binaries are on the [releases page](https://github.com/SealMesh/sealmesh/releases).
+Prebuilt binaries are on the [releases page](https://github.com/allocmemory/sealmesh/releases).
 
-The router ships as `ghcr.io/sealmesh/sealmesh-server`, or as a binary on the
+The router ships as `ghcr.io/allocmemory/sealmesh-server`, or as a binary on the
 same releases page.
 
 From source, with Rust 1.95 or newer (`rustup toolchain install 1.95.0`):
 
 ```sh
-git clone https://github.com/SealMesh/sealmesh.git
+git clone https://github.com/allocmemory/sealmesh.git
 cd sealmesh
 cargo install --locked --path crates/sealmesh
 cargo install --locked --path crates/sealmesh-mcp

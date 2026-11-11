@@ -7,8 +7,8 @@
 | Channel | What ships | Job |
 |---|---|---|
 | GitHub Releases | `sealmesh`, `sealmesh-mcp` and `sealmesh-server` for macOS (arm64, x86_64) and Linux (arm64, x86_64), shell installers, checksums | dist `build-*` and `host` |
-| Homebrew | a formula per program in `SealMesh/homebrew-tap` (`brew install sealmesh/tap/sealmesh`) | dist `publish-homebrew-formula` |
-| ghcr.io | `ghcr.io/sealmesh/sealmesh-server:<version>` and `:latest` | `publish-image.yml` |
+| Homebrew | a formula per program in `allocmemory/homebrew-tap` (`brew install allocmemory/tap/sealmesh`) | dist `publish-homebrew-formula` |
+| ghcr.io | `ghcr.io/allocmemory/sealmesh-server:<version>` and `:latest` | `publish-image.yml` |
 | crates.io | every workspace crate, in dependency order | `publish-crates.yml` |
 
 A pull request runs `dist plan` only; nothing is built or published.
@@ -28,7 +28,7 @@ closed.
 
 ### Before the first release
 
-- Create the tap repository `SealMesh/homebrew-tap`.
+- Create the tap repository `allocmemory/homebrew-tap`.
 - Add the repository secrets `HOMEBREW_TAP_TOKEN` (a token that can push to the
   tap) and `CARGO_REGISTRY_TOKEN` (a crates.io token with publish scope).
 - After the first image push, make the `sealmesh-server` package on ghcr.io
@@ -55,8 +55,8 @@ different builds answer to one name.
 |---|---|
 | crates.io | `cargo yank --version X.Y.Z <crate>` for each crate. Existing lockfiles keep working; new resolves skip it. |
 | GitHub Releases | Mark the release as a pre-release (or delete it) so `latest` points at the good one. |
-| ghcr.io | Point `latest` back at the previous version: `docker buildx imagetools create -t ghcr.io/sealmesh/sealmesh-server:latest ghcr.io/sealmesh/sealmesh-server:<previous>`. |
-| Homebrew | Revert the formula commit in `SealMesh/homebrew-tap`. |
+| ghcr.io | Point `latest` back at the previous version: `docker buildx imagetools create -t ghcr.io/allocmemory/sealmesh-server:latest ghcr.io/allocmemory/sealmesh-server:<previous>`. |
+| Homebrew | Revert the formula commit in `allocmemory/homebrew-tap`. |
 
 ### A release that stopped halfway
 

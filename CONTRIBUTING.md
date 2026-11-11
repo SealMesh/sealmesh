@@ -4,7 +4,7 @@ Thanks for helping. Sealmesh is small on purpose; a change that keeps it small
 is the easiest one to merge.
 
 Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
-Questions go to [Discussions](https://github.com/SealMesh/sealmesh/discussions);
+Questions go to [Discussions](https://github.com/allocmemory/sealmesh/discussions);
 the docs are at [sealmesh.dev](https://sealmesh.dev/docs/).
 
 ## Before your first pull request
