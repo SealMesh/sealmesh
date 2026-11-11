@@ -46,7 +46,7 @@ axum = { version = "0.8.6", default-features = false, features = ["http1", "json
 clap = { version = "4", features = ["derive"] }
 dirs = "7.0.0"
 futures-util = { version = "0.3.31", default-features = false, features = ["sink"] }
-gix = { version = "0.86.0", default-features = false, features = ["max-performance-safe", "sha1", "status", "revision", "dirwalk", "parallel"] }
+gix = { version = "0.89.0", default-features = false, features = ["max-performance-safe", "sha1", "status", "revision", "dirwalk", "parallel"] }
 jiff = { version = "0.2.35", features = ["serde"] }
 # `O_NONBLOCK`, so the MCP server can open a file that might be a fifo
 # without blocking. Already in the tree through tokio; no new crate.
