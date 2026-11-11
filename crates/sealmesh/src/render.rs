@@ -595,6 +595,22 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_row_is_labelled_codex_beside_a_claude_one() {
+        let mut snapshot = snapshot("shelter", "2026-08-10T19:56:51.322Z");
+        let mut codex = agent("2c3d4e5f");
+        codex.tool = Some(crate::wire::ToolId::codex());
+        let mut claude = agent("1e631e34");
+        claude.tool = Some(crate::wire::ToolId::claude_code());
+        snapshot.agents = vec![codex, claude];
+
+        let out = rendered(HostStatus::Answering(&snapshot, None));
+        let codex_line = out.lines().find(|l| l.contains("2c3d4e5f")).unwrap();
+        assert!(codex_line.ends_with(" · codex"), "{out}");
+        let claude_line = out.lines().find(|l| l.contains("1e631e34")).unwrap();
+        assert!(claude_line.ends_with(" · claude-code"), "{out}");
+    }
+
+    #[test]
     fn a_terminal_escape_never_reaches_the_terminal() {
         let hostile = "feature/\u{1b}]0;pwn\u{7}x\u{9b}31m";
         let clean = sanitize(hostile, MAX_FIELD);

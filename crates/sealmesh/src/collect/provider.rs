@@ -32,6 +32,10 @@ impl Priority {
     /// Below `DECLARED` and above `CLAUDE_SESSION`: a tool added by config
     /// should lose to a first-class provider that knows more about its subject.
     pub const GENERIC: Self = Self(150);
+    /// A Codex rollout. Below a config block, though a `[[provider]]` named
+    /// `codex` never runs beside it (see `providers::shadowed_by_native`), and
+    /// below `DECLARED`, so a wrapper that declares the same row wins.
+    pub const CODEX_SESSION: Self = Self(110);
     /// A session file mostly proves a process exists.
     pub const CLAUDE_SESSION: Self = Self(100);
 }
@@ -46,6 +50,7 @@ impl ProviderId {
     pub const CLAUDE_JOB: Self = Self(Cow::Borrowed("job"));
     pub const CLAUDE_SESSION: Self = Self(Cow::Borrowed("session"));
     pub const DECLARED: Self = Self(Cow::Borrowed("declared"));
+    pub const CODEX_SESSION: Self = Self(Cow::Borrowed("codex"));
 
     /// A provider declared in config. The prefix keeps a config-added name from
     /// colliding with a built-in one in `doctor`'s output.
@@ -116,7 +121,8 @@ mod tests {
         // choice rather than a side effect of declaration order.
         assert!(Priority::CLAUDE_JOB > Priority::DECLARED);
         assert!(Priority::DECLARED > Priority::GENERIC);
-        assert!(Priority::GENERIC > Priority::CLAUDE_SESSION);
+        assert!(Priority::GENERIC > Priority::CODEX_SESSION);
+        assert!(Priority::CODEX_SESSION > Priority::CLAUDE_SESSION);
     }
 
     #[test]
@@ -125,6 +131,7 @@ mod tests {
             ProviderId::CLAUDE_JOB,
             ProviderId::CLAUDE_SESSION,
             ProviderId::DECLARED,
+            ProviderId::CODEX_SESSION,
         ] {
             assert_ne!(ProviderId::generic(built_in.as_str()), built_in);
         }

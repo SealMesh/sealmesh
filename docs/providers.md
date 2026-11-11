@@ -1,8 +1,9 @@
 # Adding a tool
 
-sealmesh reads Claude Code natively. Any other agentic tool — Codex, Qwen,
-Ollama, something you wrote yourself — gets in one of two ways, and the right
-one depends on whether the tool already writes state to disk.
+sealmesh reads Claude Code and Codex natively (see "Native providers" below).
+Any other agentic tool — Qwen, Ollama, something you wrote yourself — gets in
+one of two ways, and the right one depends on whether the tool already writes
+state to disk.
 
 There is a third document next to this one. [`contract.md`](contract.md) is the
 **push** channel: your tool tells sealmesh what it is doing. This file is the
@@ -16,7 +17,7 @@ If you can run a command when your agent starts, changes state, and stops, use
 
 ```sh
 sealmesh declare --id "$(echo -n "$RUN" | shasum | cut -c1-8)" \
-                   --tool codex \
+                   --tool aider \
                    --worktree "$PWD" \
                    --state working
 
@@ -139,10 +140,68 @@ config ordering.
 | Claude Code job files | 300 |
 | `sealmesh declare` records | 200 |
 | **`[[provider]]` blocks** | **150** (default, override with `priority`) |
+| Codex rollouts | 110 |
 | Claude Code session files | 100 |
 
 A config-added provider sits below `declare` on purpose: a tool that named
 itself knows more than a directory we inferred things from.
+
+A `[[provider]]` block named `codex` is **skipped**, not ranked: the native
+Codex reader owns that name. Priority only settles two views of the same id,
+and the two readers would derive different ids for one session (a uuid suffix
+versus a hash), so running both would show every Codex session twice.
+`sealmesh doctor` names a skipped block. The config still loads, so a block
+written before Codex was native does not stop the daemon.
+
+## Native providers
+
+### Claude Code
+
+Read from every `~/.claude*` directory (plus `SEALMESH_CLAUDE_CONFIG_DIR` and
+`[claude] extra_roots`): `jobs/<id>/state.json` and `sessions/<pid>.json`, with
+the session's pid checked against the process table.
+
+### Codex
+
+Read from `$CODEX_HOME`, or `~/.codex` when it is unset — the same rule Codex
+uses. The layout relied on, from Codex's own rollout writer
+(`codex-rs/rollout` in [openai/codex](https://github.com/openai/codex)):
+
+```text
+$CODEX_HOME/sessions/YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-<thread uuid>.jsonl
+```
+
+One JSONL file per thread, `{"timestamp", "type", "payload"}` per line. The
+date directories are local time; a reverted thread's file name carries a
+second uuid after an `_`, and the thread uuid stays the identity. sealmesh
+reads, and only reads:
+
+| Record | Fields used | For |
+|---|---|---|
+| first line, `type = "session_meta"` | `payload.timestamp`, `payload.cwd`, `payload.source`, `payload.parent_thread_id` | start time, launch directory, skipping subagent/internal threads |
+| `type = "turn_context"` | `payload.cwd` | the directory the latest turn ran in (wins over the launch directory) |
+| `type = "event_msg"` | `payload.type` | `task_started` → working; `task_complete` / `turn_aborted` → idle; none in view → unknown |
+
+Liveness is the file's mtime: a rollout written to within the last **15
+minutes** is a live session. Codex records no pid and persists no session-end
+event, so there is nothing firmer to check; an idle Codex left open longer than
+that drops out of `who` until its next turn. Codex's per-thread writer lock
+under `thread-writer-locks/` is deliberately not probed — taking even a shared
+lock on it could make a starting Codex refuse its own thread.
+
+Bounds: only day directories from the last 8 days are listed, at most the 32
+most recent live rollouts are opened, the first line is read up to 256 KiB and
+the last 128 KiB of the file for the rest — never the middle. A turn whose
+output alone is larger than that window reads as `unknown`. Compressed
+`.jsonl.zst` rollouts (Codex compresses files a week cold) and
+`archived_sessions/` are ignored.
+
+Never read into memory: message text, tool output, instructions, the git remote
+or branch Codex recorded at start. Each line is parsed into a struct with no
+field for any of them, and the repo and branch come from the same git lookup on
+the working directory that every other row uses. The row id is the last eight
+hex digits of the thread uuid — Codex mints UUIDv7s, whose leading digits are a
+timestamp shared by sessions started in the same minute.
 
 ## Option 3 — write a native provider
 

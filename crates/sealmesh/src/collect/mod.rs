@@ -1,4 +1,5 @@
 pub mod claude_sessions;
+pub mod codex;
 pub mod declared;
 pub mod fs;
 pub mod generic;
@@ -411,6 +412,7 @@ mod tests {
         fn providers(&self, options: &Options) -> Vec<Box<dyn Provider>> {
             providers::built_in(
                 self.roots(),
+                None,
                 options.declared_dir.clone(),
                 options.declared_ttl,
             )
@@ -532,6 +534,90 @@ mod tests {
             &procs(&[64653]),
             fixture_now(),
         )
+    }
+
+    #[test]
+    fn a_live_codex_session_publishes_as_a_codex_row_without_its_text() {
+        let m = machine("codex");
+        let repo = m.base.join("work/example-repo").canonicalize().unwrap();
+        let now = Timestamp::now();
+        let date = now.to_zoned(jiff::tz::TimeZone::UTC).date();
+        let day = m
+            .base
+            .join(".codex/sessions")
+            .join(format!("{:04}", date.year()))
+            .join(format!("{:02}", date.month()))
+            .join(format!("{:02}", date.day()));
+        std::fs::create_dir_all(&day).unwrap();
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-11-10T09:15:02.481Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "019a6f2e-1c3b-7d40-9e55-0a1b2c3d4e5f",
+                    "timestamp": "2026-11-10T09:15:02.123Z",
+                    "cwd": m.base.join("work"),
+                    "source": "cli",
+                    "base_instructions": {"text": CANARY},
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-11-10T09:15:03.000Z",
+                "type": "turn_context",
+                "payload": {"cwd": repo, "user_instructions": CANARY}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-11-10T09:15:04.000Z",
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "1"}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-11-10T09:15:05.000Z",
+                "type": "response_item",
+                "payload": {"type": "message", "content": [{"text": CANARY}]}
+            }),
+        ];
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(
+            day.join("rollout-2026-11-10T09-15-02-019a6f2e-1c3b-7d40-9e55-0a1b2c3d4e5f.jsonl"),
+            body,
+        )
+        .unwrap();
+
+        let options = options();
+        let providers = providers::built_in(
+            m.roots(),
+            Some(m.base.join(".codex")),
+            None,
+            options.declared_ttl,
+        );
+        let agents: Vec<wire::Agent> = examine_with(
+            &providers,
+            &m.gate(&["work"], &["example-org/example-repo"]),
+            &m,
+            &options,
+            &procs(&[64653]),
+            now,
+        )
+        .into_iter()
+        .filter_map(|d| match d.outcome {
+            Outcome::Published(agent) => Some(*agent),
+            _ => None,
+        })
+        .collect();
+
+        let codex: Vec<_> = agents
+            .iter()
+            .filter(|a| a.tool == Some(wire::ToolId::codex()))
+            .collect();
+        assert_eq!(codex.len(), 1, "{agents:#?}");
+        let row = codex.first().unwrap();
+        assert_eq!(row.id.as_str(), "2c3d4e5f");
+        assert_eq!(row.repo.as_str(), "example-org/example-repo");
+        assert_eq!(row.run_state, wire::RunState::Working);
+
+        let json = serde_json::to_string(&agents).unwrap();
+        assert!(!json.contains(CANARY), "canary reached the wire: {json}");
     }
 
     #[test]

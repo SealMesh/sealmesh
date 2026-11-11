@@ -7,10 +7,10 @@
 
 use std::path::PathBuf;
 
-use jiff::SignedDuration;
+use jiff::{SignedDuration, Timestamp};
 
 use super::{
-    Candidate, claude_sessions, declared,
+    Candidate, claude_sessions, codex, declared,
     generic::{self, ProviderSpec},
     job,
     liveness::Liveness,
@@ -24,10 +24,24 @@ use crate::wire::{TaskProgress, ToolId};
 /// precedence comes from `Priority`, not from position.
 pub fn built_in(
     roots: Vec<Root>,
+    codex_home: Option<PathBuf>,
     declared_dir: Option<PathBuf>,
     declared_ttl: SignedDuration,
 ) -> Vec<Box<dyn Provider>> {
-    with_configured(roots, declared_dir, declared_ttl, &[])
+    with_configured(roots, codex_home, declared_dir, declared_ttl, &[])
+}
+
+/// Whether a `[[provider]]` block is skipped because a native provider owns
+/// its name.
+///
+/// Native wins, and the block does not run at all rather than running at a
+/// lower priority. The two would derive different ids for the same session —
+/// the native reader from the thread uuid, the config reader from a hash — so
+/// priority, which only settles two views of the *same* id, could not stop
+/// them showing as two agents. `doctor` names a skipped block so it is not a
+/// silent no-op.
+pub fn shadowed_by_native(spec: &ProviderSpec) -> bool {
+    spec.name == ToolId::codex().as_str()
 }
 
 /// The built-in providers plus any described in config.
@@ -37,6 +51,7 @@ pub fn built_in(
 /// this only drops a block that passed validation and still could not build.
 pub fn with_configured(
     roots: Vec<Root>,
+    codex_home: Option<PathBuf>,
     declared_dir: Option<PathBuf>,
     declared_ttl: SignedDuration,
     configured: &[ProviderSpec],
@@ -45,10 +60,16 @@ pub fn with_configured(
         Box::new(ClaudeJobs::new(roots.clone())),
         Box::new(ClaudeSessions::new(roots)),
     ];
+    if let Some(home) = codex_home {
+        providers.push(Box::new(CodexSessions::new(home)));
+    }
     if let Some(dir) = declared_dir {
         providers.push(Box::new(Declared::new(dir, declared_ttl)));
     }
     for spec in configured {
+        if shadowed_by_native(spec) {
+            continue;
+        }
         if let Some(provider) = generic::Generic::new(spec.clone()) {
             providers.push(Box::new(provider));
         }
@@ -174,6 +195,44 @@ impl Provider for ClaudeSessions {
     }
 }
 
+/// Codex CLI threads, from the rollout files under `$CODEX_HOME/sessions`.
+pub struct CodexSessions {
+    home: PathBuf,
+}
+
+impl CodexSessions {
+    pub fn new(home: PathBuf) -> Self {
+        Self { home }
+    }
+}
+
+impl Provider for CodexSessions {
+    fn id(&self) -> ProviderId {
+        ProviderId::CODEX_SESSION
+    }
+
+    fn priority(&self) -> Priority {
+        Priority::CODEX_SESSION
+    }
+
+    /// A Codex thread can be named as a declared record's parent. Proven by a
+    /// recent write to its rollout, from metadata alone — the files are not
+    /// opened here, so this costs a directory walk and nothing more.
+    fn live_sessions(&self, _procs: &dyn Liveness) -> Vec<SessionRef> {
+        codex::recent(&self.home, Timestamp::now())
+            .into_iter()
+            .map(|rollout| SessionRef {
+                tool: ToolId::codex(),
+                id: rollout.thread_id,
+            })
+            .collect()
+    }
+
+    fn scan(&self, ctx: &ScanCtx<'_>) -> Vec<Candidate> {
+        codex::read_all(&self.home, ctx.now)
+    }
+}
+
 pub struct Declared {
     dir: PathBuf,
     ttl: SignedDuration,
@@ -200,5 +259,92 @@ impl Provider for Declared {
             .into_iter()
             .filter_map(|read| read.outcome.ok())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
+
+    use super::*;
+    use crate::collect::generic::{FieldMap, Layout, LivenessSpec, StateMap, TimeFormat};
+
+    fn spec(name: &str, root: &str) -> ProviderSpec {
+        ProviderSpec {
+            name: name.to_owned(),
+            root: PathBuf::from(root),
+            layout: Layout::FilePerAgent,
+            priority: Priority::GENERIC.0,
+            time: TimeFormat::Rfc3339,
+            fields: FieldMap {
+                work_dir: "dir".to_owned(),
+                run_state: "status".to_owned(),
+                started_at: "started".to_owned(),
+                ..FieldMap::default()
+            },
+            run_state: StateMap::default(),
+            liveness: LivenessSpec::default(),
+        }
+    }
+
+    fn ids(providers: &[Box<dyn Provider>]) -> Vec<String> {
+        let mut ids: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn a_config_block_named_codex_yields_to_the_native_reader() {
+        let configured = [
+            spec("codex", "/tmp/sealmesh-fake-codex-runs"),
+            spec("qwen", "/tmp/sealmesh-fake-qwen-runs"),
+        ];
+        // The block validates — an old config keeps loading — and is skipped.
+        assert_eq!(generic::validate(&configured), Ok(()));
+        assert!(shadowed_by_native(&configured[0]));
+        assert!(!shadowed_by_native(&configured[1]));
+
+        let providers = with_configured(
+            Vec::new(),
+            Some(PathBuf::from("/tmp/sealmesh-fake-codex-home")),
+            None,
+            SignedDuration::from_secs(900),
+            &configured,
+        );
+        assert_eq!(ids(&providers), ["codex", "job", "session", "toml:qwen"]);
+    }
+
+    #[test]
+    fn without_a_codex_home_there_is_no_codex_provider() {
+        let providers =
+            with_configured(Vec::new(), None, None, SignedDuration::from_secs(900), &[]);
+        assert_eq!(ids(&providers), ["job", "session"]);
+    }
+
+    #[test]
+    fn a_missing_codex_home_scans_to_nothing_without_error() {
+        let home = std::env::temp_dir().join("sealmesh-providers-no-codex-home");
+        std::fs::remove_dir_all(&home).ok();
+        let provider = CodexSessions::new(home);
+
+        struct NoProcs;
+        impl Liveness for NoProcs {
+            fn started_at_secs(&self, _pid: u32) -> Option<i64> {
+                None
+            }
+        }
+        let live = std::collections::BTreeSet::new();
+        let ctx = ScanCtx {
+            now: Timestamp::now(),
+            procs: &NoProcs,
+            live_sessions: &live,
+        };
+        assert!(provider.scan(&ctx).is_empty());
+        assert!(provider.live_sessions(&NoProcs).is_empty());
     }
 }
