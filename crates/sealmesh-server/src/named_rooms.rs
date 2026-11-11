@@ -4,11 +4,11 @@
 //! from its own config). A cloud router never is, so its table is empty and
 //! every `Scope::Named` join is refused before anything is asked of GitHub.
 //!
-//! Membership is a closed list of identity labels. Today the label a
-//! connection is checked against is its host (the login the directory
-//! returns, folded by `host_from_login`). The std PR stamps an agent name on
-//! each local connection; `room_access` is the one place that picks the label,
-//! so that is the seam to change.
+//! Membership is a closed list of identity labels, checked against the name a
+//! connection holds rooms under (`Directory::room_identity`): its host in
+//! cloud and otw, the built-in agent `claude` for the std daemon's own
+//! connection, and an agent's configured name for the seat the std daemon
+//! opens for it. `room_access` is the one place that compares them.
 
 use std::collections::{BTreeMap, BTreeSet};
 

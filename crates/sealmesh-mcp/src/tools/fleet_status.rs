@@ -376,7 +376,7 @@ mod tests {
     use sealmesh_wire::{ProjectId, RepoSlug};
     use serde_json::{Value, json};
     use tokio::net::TcpListener;
-    use tokio_tungstenite::{connect_async_with_config, tungstenite::Message};
+    use tokio_tungstenite::tungstenite::Message;
 
     use super::*;
     use crate::tools::{fits, tool_for};
@@ -433,10 +433,9 @@ mod tests {
             }
             std::future::pending::<()>().await;
         });
-        let (socket, _response) = connect_async_with_config(format!("ws://{addr}"), None, false)
+        sealmesh::client::open(&format!("ws://{addr}"))
             .await
-            .unwrap();
-        socket
+            .unwrap()
     }
 
     fn to_json(status: &FleetStatus) -> Value {
@@ -545,10 +544,9 @@ mod tests {
                 .unwrap();
             std::future::pending::<()>().await;
         });
-        let (socket, _response) = connect_async_with_config(format!("ws://{addr}"), None, false)
+        sealmesh::client::open(&format!("ws://{addr}"))
             .await
-            .unwrap();
-        socket
+            .unwrap()
     }
 
     #[tokio::test]
@@ -646,7 +644,7 @@ mod tests {
             .unwrap();
             std::future::pending::<()>().await;
         });
-        let (socket, _) = connect_async_with_config(format!("ws://{addr}"), None, false)
+        let socket = sealmesh::client::open(&format!("ws://{addr}"))
             .await
             .unwrap();
         let status = to_json(&query(socket).await.unwrap());

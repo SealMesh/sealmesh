@@ -22,8 +22,8 @@ pub fn local_socket_dir() -> Option<PathBuf> {
     state_home().map(|d| d.join("sealmesh/local"))
 }
 
-/// The directory the std-mode embedded router keeps its per-boot secret in
-/// (and, with the std PR, its socket). 0700, owned by the user running it.
+/// The directory the std-mode embedded router keeps its per-boot secret in,
+/// with its socket and history. 0700, owned by the user running it.
 pub fn local_router_dir() -> Option<PathBuf> {
     state_home().map(|d| d.join("sealmesh/router"))
 }
@@ -32,6 +32,32 @@ pub fn local_router_dir() -> Option<PathBuf> {
 /// router when it starts, read by `CredentialSource::LocalSecret`.
 pub fn local_router_secret() -> Option<PathBuf> {
     local_router_dir().map(|d| d.join("secret"))
+}
+
+/// The std-mode embedded router's Unix socket (0600, in the 0700 router
+/// directory). The router has no TCP listener in std mode; this is its only
+/// way in.
+pub fn local_router_socket() -> Option<PathBuf> {
+    local_router_dir().map(|d| d.join("router.sock"))
+}
+
+/// The std-mode embedded router's room history (SQLite, 7-day retention).
+pub fn local_router_history() -> Option<PathBuf> {
+    local_router_dir().map(|d| d.join("history.sqlite"))
+}
+
+/// `agents.sock`: the std daemon's HTTP-over-Unix-socket link for configured
+/// agents (`[[agent]]`). 0600, in `$XDG_STATE_HOME/sealmesh`, which is made
+/// 0700.
+pub fn agents_socket() -> Option<PathBuf> {
+    state_home().map(|d| d.join("sealmesh/agents.sock"))
+}
+
+/// Where each configured agent's bearer token lives, as `<name>.token`
+/// (0600). The same directory `sealmesh declare` writes `<id>.json` records
+/// to; each reader looks only at its own extension.
+pub fn agent_tokens_dir() -> Option<PathBuf> {
+    declared_agents_dir()
 }
 
 fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {

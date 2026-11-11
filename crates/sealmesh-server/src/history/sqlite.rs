@@ -120,6 +120,27 @@ impl SqliteHistory {
         })
         .await
     }
+
+    /// Deletes expired rows every `every`, for as long as the runtime runs.
+    /// A failed sweep is logged and retried next time: reads never serve an
+    /// expired message either way. Shared by the standalone router and the
+    /// std daemon's embedded one.
+    pub fn spawn_sweeper(&self, every: std::time::Duration) {
+        let store = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            loop {
+                tick.tick().await;
+                let swept = match super::now_epoch() {
+                    Ok(now) => store.sweep_expired(now).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = swept {
+                    eprintln!("sweeping expired room messages failed: {error}");
+                }
+            }
+        });
+    }
 }
 
 impl RoomHistory for SqliteHistory {

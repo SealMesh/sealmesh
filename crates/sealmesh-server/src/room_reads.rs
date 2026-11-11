@@ -280,8 +280,11 @@ pub(crate) async fn readable_rooms<D: Directory>(
         if listed.len() >= MAX_LISTED_ROOMS {
             break;
         }
-        match tokio::time::timeout_at(deadline, authorise_join(&charged, projects, token, &room))
-            .await
+        match tokio::time::timeout_at(
+            deadline,
+            authorise_join(&charged, projects, token, payer, &room),
+        )
+        .await
         {
             Ok(Ok(())) => listed.push(room),
             Ok(Err(_denied)) => {}

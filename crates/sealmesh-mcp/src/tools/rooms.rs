@@ -47,7 +47,7 @@ use sealmesh::{
         local::{BackfillCategory, PostCategory, Request, Response},
     },
 };
-use sealmesh_chat_wire::{RoomId, Scope};
+use sealmesh_chat_wire::{RoomId, RoomName, Scope};
 use serde::{Deserialize, Serialize};
 
 use crate::router::RouterAccess;
@@ -66,10 +66,14 @@ const _: () = assert!(
 );
 
 /// Which of the caller's own rooms: the room of the ticket its branch names,
-/// the room of its repo, or its project's room.
+/// the room of its repo, its project's room, or (std mode) a named room that
+/// lists Claude as a member.
 ///
-/// A scope, not a room. It is resolved against the checkout this server runs
-/// in, so it can only ever pick one of the caller's own rooms.
+/// A scope, not a room. The first three are resolved against the checkout
+/// this server runs in, so they can only ever pick one of the caller's own
+/// rooms. `named` takes a `name` alongside it, and is accepted only for a
+/// `[[room]]` in this machine's own config whose members include the built-in
+/// agent `claude`; the router checks the same membership again on every join.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(rename_all = "snake_case")]
@@ -77,21 +81,27 @@ pub enum RoomScope {
     Ticket,
     Repo,
     Project,
+    Named,
 }
 
 impl RoomScope {
-    /// The scope word of one of a checkout's rooms. `None` for a named room,
-    /// which no checkout resolves to: named rooms come from the daemon's
-    /// `[[room]]` config (std and otw mode), and the MCP tools reach them
-    /// through their own path once the std PR adds it.
+    /// The scope word of a room.
     pub fn of(room: &RoomId) -> Option<Self> {
         match room.scope {
             Scope::Ticket(_) => Some(Self::Ticket),
             Scope::Repo(_) => Some(Self::Repo),
             Scope::Project => Some(Self::Project),
-            Scope::Named(_) => None,
+            Scope::Named(_) => Some(Self::Named),
         }
     }
+}
+
+/// A room tool's target before anything is asked of the daemon: a named room,
+/// settled from config alone, or a scope of a checkout still to resolve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Named(RoomId),
+    Checkout(Checkout, RoomScope),
 }
 
 /// Why a room tool call did nothing. A closed set; see the module docs.
@@ -228,6 +238,9 @@ pub struct Context {
     pub call_deadline: Duration,
     /// How long `room_post` waits for its drain key before posting without.
     pub lookup_deadline: Duration,
+    /// The named rooms this machine's config lists Claude in (std mode),
+    /// the only ones `room: named` may name. Empty elsewhere.
+    pub named_rooms: Vec<RoomName>,
 }
 
 impl Context {
@@ -238,7 +251,9 @@ impl Context {
             .load_config()
             .map_err(|_| RoomFailure::ConfigUnavailable)?;
         let dir = std::env::current_dir().map_err(|_| RoomFailure::NotACheckout)?;
+        let named_rooms = claude_rooms(&config);
         Ok(Self {
+            named_rooms,
             dir,
             prefixes: config.ticket_prefixes,
             project_rooms: config.chat.project_rooms,
@@ -247,6 +262,31 @@ impl Context {
             call_deadline: CALL_DEADLINE,
             lookup_deadline: crate::session::LOOKUP_DEADLINE,
         })
+    }
+
+    /// What `scope` and `name` point at. A named room is settled here from
+    /// config; anything else needs the caller's checkout. A `name` with any
+    /// other scope, a name that is not one, and a named room that does not
+    /// list Claude are all `no_room` (rule 25).
+    pub fn target(&self, scope: RoomScope, name: Option<&str>) -> Result<Target, RoomFailure> {
+        match (scope, name) {
+            (RoomScope::Named, Some(name)) => RoomName::try_from(name)
+                .ok()
+                .filter(|name| self.named_rooms.contains(name))
+                .map(|name| Target::Named(RoomId::named(name)))
+                .ok_or(RoomFailure::NoRoom),
+            (RoomScope::Named, None) | (_, Some(_)) => Err(RoomFailure::NoRoom),
+            (scope, None) => Ok(Target::Checkout(self.checkout()?, scope)),
+        }
+    }
+
+    /// The room `target` points at, resolving a checkout's scope through
+    /// the daemon.
+    pub async fn room_of(&self, target: Target) -> Result<RoomId, RoomFailure> {
+        match target {
+            Target::Named(room) => Ok(room),
+            Target::Checkout(checkout, scope) => self.room(&checkout, scope).await,
+        }
     }
 
     /// The caller's own checkout.
@@ -299,6 +339,17 @@ impl Context {
             .find(|room| RoomScope::of(room) == Some(scope))
             .ok_or(RoomFailure::NoRoom)
     }
+}
+
+/// The rooms `room: named` may name: in std mode, every `[[room]]` listing
+/// the built-in agent `claude`. A cloud or otw config names none here.
+fn claude_rooms(config: &sealmesh::config::Config) -> Vec<RoomName> {
+    if config.mode() != sealmesh::config::Mode::Std {
+        return Vec::new();
+    }
+    sealmesh_wire::HostId::try_from(sealmesh::config::BUILT_IN_AGENT)
+        .map(|claude| config.agent_rooms(&claude))
+        .unwrap_or_default()
 }
 
 /// Where the running daemon listens.
@@ -484,6 +535,7 @@ pub(crate) mod fake {
                 request_deadline: Duration::from_secs(5),
                 call_deadline: Duration::from_secs(10),
                 lookup_deadline: Duration::from_secs(2),
+                named_rooms: vec![sealmesh_chat_wire::RoomName::try_from("ops").unwrap()],
             }
         }
     }
@@ -538,11 +590,12 @@ mod tests {
     use super::{fake::*, *};
 
     #[test]
-    fn a_scope_word_is_one_of_three_and_nothing_else() {
+    fn a_scope_word_is_one_of_four_and_nothing_else() {
         for (word, scope) in [
             ("ticket", RoomScope::Ticket),
             ("repo", RoomScope::Repo),
             ("project", RoomScope::Project),
+            ("named", RoomScope::Named),
         ] {
             assert_eq!(
                 serde_json::from_value::<RoomScope>(json!(word)).unwrap(),
@@ -564,7 +617,83 @@ mod tests {
         assert_eq!(RoomScope::of(&repo_room()), Some(RoomScope::Repo));
         assert_eq!(RoomScope::of(&project_room()), Some(RoomScope::Project));
         let named = RoomId::named(sealmesh_chat_wire::RoomName::try_from("ops").unwrap());
-        assert_eq!(RoomScope::of(&named), None);
+        assert_eq!(RoomScope::of(&named), Some(RoomScope::Named));
+    }
+
+    fn named_context(rooms: &[&str]) -> Context {
+        Context {
+            dir: std::env::temp_dir().join("awm-named-no-checkout"),
+            prefixes: vec![],
+            project_rooms: false,
+            socket: None,
+            request_deadline: DEFAULT_DEADLINE,
+            call_deadline: CALL_DEADLINE,
+            lookup_deadline: crate::session::LOOKUP_DEADLINE,
+            named_rooms: rooms
+                .iter()
+                .map(|name| sealmesh_chat_wire::RoomName::try_from(*name).unwrap())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_named_room_is_one_this_config_lists_claude_in_and_needs_no_checkout() {
+        let context = named_context(&["ops"]);
+        let ops = RoomId::named(sealmesh_chat_wire::RoomName::try_from("ops").unwrap());
+        assert_eq!(
+            context.target(RoomScope::Named, Some("ops")).unwrap(),
+            Target::Named(ops)
+        );
+        // Not listed, not a room name, no name, or a name with another scope:
+        // one answer, and the daemon is never asked.
+        for (scope, name) in [
+            (RoomScope::Named, Some("dev")),
+            (RoomScope::Named, Some("Ops")),
+            (RoomScope::Named, Some("../ops")),
+            (RoomScope::Named, None),
+            (RoomScope::Repo, Some("ops")),
+            (RoomScope::Ticket, Some("ops")),
+        ] {
+            assert_eq!(
+                context.target(scope, name).unwrap_err(),
+                RoomFailure::NoRoom,
+                "{scope:?} {name:?}"
+            );
+        }
+        // A config that lists Claude in no room (cloud, otw) names none.
+        assert_eq!(
+            named_context(&[])
+                .target(RoomScope::Named, Some("ops"))
+                .unwrap_err(),
+            RoomFailure::NoRoom
+        );
+    }
+
+    #[test]
+    fn claude_names_only_the_std_rooms_that_list_it() {
+        let dir = std::env::temp_dir().join(format!("awm-claude-rooms-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |name: &str, text: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, text).unwrap();
+            sealmesh::config::Config::load(Some(&path)).unwrap()
+        };
+        let std = load(
+            "std.toml",
+            "[mesh]\nmode = \"std\"\n\
+             [[room]]\nname = \"ops\"\nmembers = [\"claude\", \"grokbot\"]\n\
+             [[room]]\nname = \"bots\"\nmembers = [\"grokbot\"]",
+        );
+        let names: Vec<String> = claude_rooms(&std).iter().map(ToString::to_string).collect();
+        assert_eq!(names, ["ops"]);
+        let otw = load(
+            "otw.toml",
+            "[mesh]\nmode = \"otw\"\n[server]\nurl = \"http://100.101.102.103:8787\"\n\
+             [allow]\nrepos = [\"o/r\"]\npaths = [\"/tmp\"]\n\
+             [[room]]\nname = \"ops\"\nmembers = [\"claude\"]",
+        );
+        assert!(claude_rooms(&otw).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -761,6 +890,7 @@ mod tests {
             request_deadline: DEFAULT_DEADLINE,
             call_deadline: CALL_DEADLINE,
             lookup_deadline: crate::session::LOOKUP_DEADLINE,
+            named_rooms: Vec::new(),
         };
         assert_eq!(context.checkout().unwrap_err(), RoomFailure::NotACheckout);
         let _ = std::fs::remove_dir_all(dir);

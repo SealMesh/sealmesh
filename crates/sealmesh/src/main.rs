@@ -221,5 +221,27 @@ fn describe_room(record: &audit::RoomRecord) -> String {
             since,
             refusals,
         } => format!("{at}  {refusals} more refusals since {since}, not itemised"),
+        RoomRecord::AgentPost {
+            at,
+            agent,
+            room,
+            seq,
+            refused,
+        } => match (seq, refused) {
+            (_, Some(refusal)) => format!(
+                "{at}  room {}  agent {agent} (agents.sock) post refused: {}",
+                room_name(room),
+                refusal.word()
+            ),
+            (Some(seq), None) => format!(
+                "{at}  room {}  agent {agent} (agents.sock) posted seq {}",
+                room_name(room),
+                seq.0
+            ),
+            (None, None) => format!(
+                "{at}  room {}  agent {agent} (agents.sock) posted",
+                room_name(room)
+            ),
+        },
     }
 }

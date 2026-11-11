@@ -122,6 +122,19 @@ pub trait Directory: Send + Sync {
     ) -> impl Future<Output = Option<Result<PeerIdentity, Denied>>> + Send {
         async { None }
     }
+
+    /// The name a daemon connection whose credential resolved to `host`
+    /// holds rooms under: the label a named room's member list is checked
+    /// against, the `from` its posts carry, and the key its post rate,
+    /// allowance and turn cap are counted under.
+    ///
+    /// The default is `host` itself, which is what every cloud connection
+    /// has always been. The std directory overrides it: there the daemon's
+    /// own connection holds rooms as the built-in agent `claude`, while
+    /// `who` still names the machine by the OS user.
+    fn room_identity(&self, host: &HostId) -> HostId {
+        host.clone()
+    }
 }
 
 /// Who a handshake proved the caller is: the host (the person), and, when the

@@ -1,19 +1,139 @@
-use std::time::Duration;
+use std::{
+    path::Path,
+    pin::Pin,
+    task::{Context as TaskContext, Poll},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use sealmesh_chat_wire::RoomId;
 use sealmesh_proto::{ClientFrame, MAX_FRAME_BYTES, ProjectEntry, Role, ServerFrame, decode};
 use sealmesh_wire::HostId;
 use serde::Deserialize;
-use tokio::net::TcpStream;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpStream,
+};
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async_with_config,
+    MaybeTlsStream, WebSocketStream, client_async_tls_with_config,
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 
-use crate::{config::Config, credential::CredentialSource};
+use crate::{
+    config::{Config, Mode},
+    credential::CredentialSource,
+};
 
-pub type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+/// A router connection: a WebSocket over TCP (cloud, otw), with TLS when the
+/// URL says `wss`, or over the std daemon's private Unix socket.
+pub type Socket = WebSocketStream<MaybeTlsStream<Stream>>;
+
+/// The byte stream under a [`Socket`]. Both arms are `Unpin`, so each poll
+/// simply forwards to the one inside.
+#[derive(Debug)]
+pub enum Stream {
+    Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(tokio::net::UnixStream),
+}
+
+impl AsyncRead for Stream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(unix)]
+            Self::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for Stream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
+            #[cfg(unix)]
+            Self::Unix(stream) => Pin::new(stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Tcp(stream) => Pin::new(stream).poll_flush(cx),
+            #[cfg(unix)]
+            Self::Unix(stream) => Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
+            #[cfg(unix)]
+            Self::Unix(stream) => Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
+
+/// The URL a WebSocket handshake over the std router's Unix socket asks for.
+/// The host is never resolved: the socket is already connected, and the
+/// router routes on the path alone.
+const UNIX_CONNECT_URL: &str = "ws://sealmesh/v1/connect";
+
+fn limits() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_FRAME_BYTES))
+        .max_frame_size(Some(MAX_FRAME_BYTES))
+}
+
+/// Opens a WebSocket to `url` over TCP, with TLS for `wss`. No handshake
+/// frame is sent: see [`connect_to`] for that.
+pub async fn open(url: &str) -> Result<Socket> {
+    let parsed = url::Url::parse(url).with_context(|| format!("reading the router url {url}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("the router url {url} names no host"))?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("the router url {url} names no port"))?;
+    let tcp = TcpStream::connect((host.as_str(), port))
+        .await
+        .with_context(|| format!("connecting to {url}"))?;
+    let _ = tcp.set_nodelay(true);
+    let (socket, _response) =
+        client_async_tls_with_config(url, Stream::Tcp(tcp), Some(limits()), None)
+            .await
+            .with_context(|| format!("connecting to {url}"))?;
+    Ok(socket)
+}
+
+/// Opens a WebSocket to the std daemon's embedded router over its Unix
+/// socket at `path`. No handshake frame is sent.
+#[cfg(unix)]
+pub async fn open_unix(path: &Path) -> Result<Socket> {
+    let unix = tokio::net::UnixStream::connect(path)
+        .await
+        .with_context(|| {
+            format!(
+                "connecting to the local router at {}. Is `sealmesh daemon` running in std mode?",
+                path.display()
+            )
+        })?;
+    let (socket, _response) =
+        client_async_tls_with_config(UNIX_CONNECT_URL, Stream::Unix(unix), Some(limits()), None)
+            .await
+            .with_context(|| format!("opening the local router at {}", path.display()))?;
+    Ok(socket)
+}
 
 /// How long to wait for a `ServerFrame::Projects` reply before giving up and
 /// rendering ungrouped. A router built before this shipped does not
@@ -27,26 +147,50 @@ pub struct Connected {
 }
 
 /// Connects to the router this config's mode names, with that mode's
-/// credential. In std mode there is no remote router to reach; the embedded
-/// router's Unix-socket path lands with the std PR, and until then this says
-/// so rather than guessing a URL.
+/// credential. In std mode that is the router inside `sealmesh daemon`, over
+/// its private Unix socket (`paths::local_router_socket`); there is no TCP
+/// path to it at all.
 pub async fn connect(config: &Config, role: Role) -> Result<Connected> {
-    let url = config.router_url()?;
     let source = config.credential_source()?;
+    if config.mode() == Mode::Std {
+        let path = crate::paths::local_router_socket()
+            .ok_or_else(|| anyhow!("no home directory to find the local router's socket under"))?;
+        return connect_unix(&path, &source, role).await;
+    }
+    let url = config.router_url()?;
     connect_to(&url, &source, role).await
 }
 
 /// [`connect`] against an explicit WebSocket URL and credential source.
 pub async fn connect_to(url: &str, source: &CredentialSource, role: Role) -> Result<Connected> {
     let token = source.token()?;
+    let socket = open(url).await?;
+    handshake(socket, source, role, token).await
+}
 
-    let limits = WebSocketConfig::default()
-        .max_message_size(Some(MAX_FRAME_BYTES))
-        .max_frame_size(Some(MAX_FRAME_BYTES));
-    let (mut socket, _response) = connect_async_with_config(url, Some(limits), false)
-        .await
-        .with_context(|| format!("connecting to {url}"))?;
+/// [`connect`] against the std router's Unix socket at `path`.
+#[cfg(unix)]
+pub async fn connect_unix(path: &Path, source: &CredentialSource, role: Role) -> Result<Connected> {
+    let token = source.token()?;
+    let socket = open_unix(path).await?;
+    handshake(socket, source, role, token).await
+}
 
+#[cfg(not(unix))]
+pub async fn connect_unix(
+    _path: &Path,
+    _source: &CredentialSource,
+    _role: Role,
+) -> Result<Connected> {
+    bail!("std mode needs Unix sockets, which this platform does not have")
+}
+
+async fn handshake(
+    mut socket: Socket,
+    source: &CredentialSource,
+    role: Role,
+    token: sealmesh_proto::SecretToken,
+) -> Result<Connected> {
     send(&mut socket, &ClientFrame::Hello { role, token }).await?;
 
     match recv_frame(&mut socket).await? {
@@ -408,10 +552,7 @@ mod tests {
             std::future::pending::<()>().await
         });
 
-        let (mut socket, _response) =
-            connect_async_with_config(format!("ws://{addr}"), None, false)
-                .await
-                .unwrap();
+        let mut socket = open(&format!("ws://{addr}")).await.unwrap();
 
         let started = std::time::Instant::now();
         let result = request_projects(&mut socket).await.unwrap();

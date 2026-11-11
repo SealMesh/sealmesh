@@ -12,7 +12,7 @@
 use std::net::SocketAddr;
 
 use sealmesh_proto::SecretToken;
-use sealmesh_wire::RepoSlug;
+use sealmesh_wire::{HostId, RepoSlug};
 
 use crate::{
     access_cache::CachingDirectory,
@@ -83,6 +83,14 @@ impl Directory for ModeDirectory {
             Self::Tailscale(directory) => directory.peer_identity(peer).await,
         }
     }
+
+    fn room_identity(&self, host: &HostId) -> HostId {
+        match self {
+            Self::Github(directory) => directory.room_identity(host),
+            Self::LocalOwner(directory) => directory.room_identity(host),
+            Self::Tailscale(directory) => directory.room_identity(host),
+        }
+    }
 }
 
 impl From<CachingDirectory<Github>> for ModeDirectory {
@@ -123,6 +131,8 @@ mod tests {
         assert_eq!(directory.known_access(&good, &repo), None);
         assert!(directory.recent_pulls(&good, &repo).await.is_err());
         assert_eq!(directory.peer_identity(None).await, None);
+        let me = HostId::try_from("me").unwrap();
+        assert_eq!(directory.room_identity(&me).as_str(), "claude");
     }
 
     #[tokio::test]

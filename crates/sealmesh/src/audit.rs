@@ -7,6 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use jiff::Timestamp;
 use sealmesh_chat_wire::RoomId;
+use sealmesh_proto::RoomSeq;
 use sealmesh_wire::HostId;
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +68,45 @@ pub enum RoomRecord {
         since: Timestamp,
         refusals: u64,
     },
+    /// A post an agent made over `agents.sock` (std mode), under the name
+    /// the daemon resolved from its token and stamped on it. `seq` when the
+    /// router took it, `refused` when it did not. Never the body.
+    AgentPost {
+        at: Timestamp,
+        agent: HostId,
+        room: RoomId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<RoomSeq>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refused: Option<AgentRefusal>,
+    },
+}
+
+/// Why an agent's post over `agents.sock` went nowhere. A closed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRefusal {
+    /// The room is not one this agent may use.
+    NotMember,
+    /// The body was over the cap.
+    TooLarge,
+    /// The request was not a well-formed post.
+    Invalid,
+    RateLimited,
+    BudgetExhausted,
+    TurnCapped,
+    NotRecorded,
+    Archived,
+    /// Chat is off on this machine.
+    Disabled,
+    /// The agent's seat had too much in flight, or has stopped.
+    Busy,
+}
+
+impl AgentRefusal {
+    pub fn word(self) -> String {
+        crate::room::word(&self)
+    }
 }
 
 /// A guardrail event in the ledger: a tool call the local policy denied, or
@@ -363,6 +403,47 @@ mod tests {
         assert!(serde_json::from_str::<RoomRecord>(line).is_err());
         let refused = r#"{"room_event":"post_refused","at":"2026-09-18T12:00:00Z","room":{"project":"example-repo","scope":"project"},"category":"rate_limited","body":"hi"}"#;
         assert!(serde_json::from_str::<RoomRecord>(refused).is_err());
+        let agent = r#"{"room_event":"agent_post","at":"2026-09-18T12:00:00Z","agent":"grokbot","room":{"project":"named","scope":{"named":"ops"}},"seq":3,"body":"hi"}"#;
+        assert!(serde_json::from_str::<RoomRecord>(agent).is_err());
+    }
+
+    #[test]
+    fn an_agent_post_reads_back_with_its_name_and_outcome() {
+        let path = temp("agent");
+        let at: Timestamp = "2026-11-10T12:00:00Z".parse().unwrap();
+        let ops = RoomId::named(sealmesh_chat_wire::RoomName::try_from("ops").unwrap());
+        for (seq, refused) in [
+            (Some(RoomSeq(3)), None),
+            (None, Some(AgentRefusal::RateLimited)),
+        ] {
+            record_room(
+                &path,
+                &RoomRecord::AgentPost {
+                    at,
+                    agent: HostId::try_from("grokbot").unwrap(),
+                    room: ops.clone(),
+                    seq,
+                    refused,
+                },
+            )
+            .unwrap();
+        }
+        let all = read_all(&path).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(matches!(
+            all.first(),
+            Some(Record::Room(RoomRecord::AgentPost { agent, seq: Some(RoomSeq(3)), refused: None, .. }))
+                if agent.as_str() == "grokbot"
+        ));
+        assert!(matches!(
+            all.get(1),
+            Some(Record::Room(RoomRecord::AgentPost {
+                refused: Some(AgentRefusal::RateLimited),
+                ..
+            }))
+        ));
+        assert_eq!(AgentRefusal::RateLimited.word(), "rate_limited");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

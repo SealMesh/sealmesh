@@ -98,12 +98,17 @@ impl From<Kind> for MessageKind {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct RoomPostArgs {
-    /// Which of your own rooms: `ticket`, `repo` or `project`.
+    /// Which of your own rooms: `ticket`, `repo` or `project`, or `named`
+    /// with `name` for a named room that lists you (std mode).
     pub room: RoomScope,
     pub kind: Kind,
     /// The message, 1 to 4,000 characters. A longer one is refused, not cut.
     #[schemars(length(min = 1, max = MAX_BODY_CHARS))]
     pub body: String,
+    /// With `room: named`, the named room to post to, such as `ops`. Only a
+    /// room this machine's config lists you in.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// A post that got an answer other than a refusal.
@@ -139,7 +144,8 @@ impl McpTool for RoomPostTool {
     const NAME: &'static str = "room_post";
     const DESCRIPTION: &'static str = "Post one message to one of the sealmesh chat rooms of the \
          checkout you are working in. `room` is ticket, repo or project — which of your own \
-         rooms, never another's. `kind` is question, claim, handoff or ack. `body` is 1 to 4000 \
+         rooms, never another's — or, in std mode, `named` with `name` for a named room that \
+         lists you. `kind` is question, claim, handoff or ack. `body` is 1 to 4000 \
          characters; a longer one fails with body_refused and is not cut. Join first with \
          room_join. The outcome is posted (with the seq it was recorded as) or post_unconfirmed \
          (sent, but no answer came in time: it may or may not have been recorded, and posting \
@@ -173,7 +179,7 @@ impl McpTool for RoomPostTool {
 
     #[cfg(test)]
     fn complete_sample() -> serde_json::Value {
-        serde_json::json!({ "room": "ticket", "kind": "claim", "body": "taking the portal" })
+        serde_json::json!({ "room": "named", "kind": "claim", "body": "taking the portal", "name": "ops" })
     }
 }
 
@@ -198,17 +204,22 @@ pub(crate) async fn post<L>(
     gate: &Cooldown,
     now: Instant,
     lookup: L,
-    RoomPostArgs { room, kind, body }: RoomPostArgs,
+    RoomPostArgs {
+        room,
+        kind,
+        body,
+        name,
+    }: RoomPostArgs,
 ) -> Result<Posted, RoomFailure>
 where
     L: FnOnce() -> Option<ConsumerKey> + Send + 'static,
 {
     let body = Body::new(body).map_err(|_| RoomFailure::BodyRefused)?;
-    let checkout = context.checkout()?;
+    let target = context.target(room, name.as_deref())?;
     if !gate.claim(now) {
         return Err(RoomFailure::RateLimited);
     }
-    let room = bounded(context.call_deadline, context.room(&checkout, room)).await?;
+    let room = bounded(context.call_deadline, context.room_of(target)).await?;
     let consumer = session::off_runtime(lookup, context.lookup_deadline).await;
     let request = Request::Post {
         room: room.clone(),
@@ -259,6 +270,7 @@ mod tests {
             room,
             kind: Kind::Claim,
             body: body.to_owned(),
+            name: None,
         }
     }
 
@@ -279,7 +291,7 @@ mod tests {
             serde_json::Value::Object(tool_for::<RoomPostTool>().input_schema.as_ref().clone());
         let mut fields: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
         fields.sort();
-        assert_eq!(fields, ["body", "kind", "room"], "{schema}");
+        assert_eq!(fields, ["body", "kind", "name", "room"], "{schema}");
         assert_eq!(
             schema["properties"]["body"]["maxLength"],
             json!(MAX_BODY_CHARS)
@@ -350,6 +362,7 @@ mod tests {
                 room: RoomScope::Repo,
                 kind: Kind::Handoff,
                 body: "the portal is yours".to_owned(),
+                name: None,
             },
         )
         .await
@@ -369,6 +382,63 @@ mod tests {
             })
         );
         assert!(matches!(requests[0], Request::Resolve { join: false, .. }));
+    }
+
+    #[tokio::test]
+    async fn a_named_room_is_posted_to_without_a_checkout_or_a_resolve() {
+        let mut daemon = FakeDaemon::start("pnm", |request| match request {
+            Request::Post { room, .. } => Some(Response::Posted {
+                room: room.clone(),
+                seq: RoomSeq(3),
+            }),
+            _ => Some(Response::Invalid {}),
+        });
+        let mut context = daemon.context(false);
+        // Not a checkout at all: a named room does not need one.
+        context.dir = daemon.root.join("nowhere");
+        let posted = post(
+            &context,
+            &open(),
+            Instant::now(),
+            no_key,
+            RoomPostArgs {
+                room: RoomScope::Named,
+                kind: Kind::Claim,
+                body: "deploy is green".to_owned(),
+                name: Some("ops".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+        let ops = RoomId::named(sealmesh_chat_wire::RoomName::try_from("ops").unwrap());
+        assert_eq!(
+            serde_json::to_value(&posted).unwrap(),
+            json!({ "outcome": "posted", "room": ops, "seq": 3 })
+        );
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(matches!(
+            requests.first(),
+            Some(Request::Post { room, .. }) if *room == ops
+        ));
+
+        // A named room this config does not list Claude in is never asked for.
+        let refused = post(
+            &context,
+            &open(),
+            Instant::now(),
+            no_key,
+            RoomPostArgs {
+                room: RoomScope::Named,
+                kind: Kind::Claim,
+                body: "x".to_owned(),
+                name: Some("payroll".to_owned()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused, RoomFailure::NoRoom);
+        assert_eq!(daemon.requests().len(), 1);
     }
 
     #[tokio::test]
