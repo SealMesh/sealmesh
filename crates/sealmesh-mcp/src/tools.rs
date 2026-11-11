@@ -153,7 +153,7 @@ pub const TOOL_INVENTORY: &[&str] = &["fleet_status", "room_join", "room_post", 
 /// ([`room_join`]), `room`, `kind` and `body` ([`room_post`]), `room` and
 /// `after` ([`room_read`]). None names an agent, a host, a session or a room
 /// owner: `room` is a scope word resolved against the caller's own checkout.
-pub const ALLOWED_INPUT_FIELDS: &[&str] = &["project", "room", "kind", "body", "after"];
+pub const ALLOWED_INPUT_FIELDS: &[&str] = &["project", "room", "kind", "body", "after", "name"];
 
 /// The largest tool result, in bytes of JSON, this server will send. A result
 /// is assembled from answers that arrived from other machines, so its size is

@@ -71,10 +71,10 @@
 
 use sealmesh_chat_wire::{RoomId, Scope};
 use sealmesh_proto::SecretToken;
-use sealmesh_wire::RepoSlug;
+use sealmesh_wire::{HostId, RepoSlug};
 
 use crate::{
-    auth::{Denied, Directory, RepoAccess, host_from_login},
+    auth::{Denied, Directory, RepoAccess},
     projects::ProjectMap,
 };
 
@@ -151,10 +151,11 @@ async fn decide<D: Directory>(
     directory: &D,
     projects: &ProjectMap,
     token: &SecretToken,
+    identity: &HostId,
     room: &RoomId,
 ) -> Result<(), Refusal> {
     if let Scope::Named(name) = &room.scope {
-        return named_member(directory, projects, token, room, name).await;
+        return named_member(projects, identity, room, name);
     }
     let repos = required_repos(projects, room)?;
     every_repo_readable(directory, token, repos).await
@@ -165,14 +166,16 @@ async fn decide<D: Directory>(
 /// so this refuses without asking the directory anything), spelled the one way
 /// `RoomId::named` spells it.
 ///
-/// The label checked is the caller's host, from the directory's login folded
-/// by `host_from_login`.
-// TODO(std): the std PR stamps an agent name ("claude", "grokbot") on each
-// local connection; check that label here instead of the host.
-async fn named_member<D: Directory>(
-    directory: &D,
+/// The label checked is `identity`: the name the connection holds its rooms
+/// under ([`Directory::room_identity`]), never a value the client sent. For a
+/// cloud or otw connection that is its host. For the std daemon's own
+/// connection it is the built-in agent `claude`, and for a std agent seat the
+/// daemon opens in-process it is the agent's configured name, which the
+/// daemon resolved from that agent's token (rule 12). So membership is a pure
+/// function of configuration and identity, and the directory is never asked.
+fn named_member(
     projects: &ProjectMap,
-    token: &SecretToken,
+    identity: &HostId,
     room: &RoomId,
     name: &sealmesh_chat_wire::RoomName,
 ) -> Result<(), Refusal> {
@@ -182,19 +185,14 @@ async fn named_member<D: Directory>(
     if projects.named_rooms().members_of(name).is_none() {
         return Err(Refusal::UnknownNamedRoom);
     }
-    let login = directory
-        .login(token)
-        .await
-        .map_err(|_| Refusal::NotANamedMember)?;
-    let identity = host_from_login(&login).map_err(|_| Refusal::NotANamedMember)?;
-    if projects.named_rooms().admits(name, &identity) {
+    if projects.named_rooms().admits(name, identity) {
         Ok(())
     } else {
         Err(Refusal::NotANamedMember)
     }
 }
 
-/// May the holder of `token` join `room`?
+/// May the holder of `token`, holding rooms as `identity`, join `room`?
 ///
 /// Default-deny: `Ok(())` only when the room's project is in `projects`, the
 /// scope resolves to a non-empty set of that project's repos per the
@@ -207,9 +205,10 @@ pub async fn authorise_join<D: Directory>(
     directory: &D,
     projects: &ProjectMap,
     token: &SecretToken,
+    identity: &HostId,
     room: &RoomId,
 ) -> Result<(), Denied> {
-    decide(directory, projects, token, room)
+    decide(directory, projects, token, identity, room)
         .await
         .map_err(|_refusal| Denied::NotAuthorised)
 }
@@ -276,6 +275,12 @@ mod tests {
 
     fn token() -> SecretToken {
         SecretToken::new("ghp_example".to_owned())
+    }
+
+    /// The identity a repo, ticket or project room is joined under. It never
+    /// decides one of those: only a named room reads it.
+    fn caller() -> HostId {
+        HostId::try_from("sandbank").unwrap()
     }
 
     fn map() -> ProjectMap {
@@ -448,7 +453,7 @@ mod tests {
         let projects = map();
         for case in cases() {
             let directory = Table::new(case.access);
-            let got = decide(&directory, &projects, &token(), &case.room).await;
+            let got = decide(&directory, &projects, &token(), &caller(), &case.room).await;
             assert_eq!(got, case.want, "{}", case.name);
             assert_eq!(directory.asked(), case.asked, "{}: asked", case.name);
         }
@@ -460,7 +465,7 @@ mod tests {
         let mut refused = 0;
         for case in cases() {
             let directory = Table::new(case.access);
-            let got = authorise_join(&directory, &projects, &token(), &case.room).await;
+            let got = authorise_join(&directory, &projects, &token(), &caller(), &case.room).await;
             match case.want {
                 Ok(()) => assert_eq!(got, Ok(()), "{}", case.name),
                 Err(_) => {
@@ -481,6 +486,7 @@ mod tests {
             &nobody_can_read,
             &projects,
             &token(),
+            &caller(),
             &room("ghost", Scope::Project),
         )
         .await;
@@ -488,6 +494,7 @@ mod tests {
             &nobody_can_read,
             &projects,
             &token(),
+            &caller(),
             &room("example-repo", Scope::Project),
         )
         .await;
@@ -495,6 +502,7 @@ mod tests {
             &Table::new(&[(EXAMPLE_REPO, Outage), (PORTAL, Outage)]),
             &projects,
             &token(),
+            &caller(),
             &room("example-repo", Scope::Project),
         )
         .await;
@@ -512,6 +520,7 @@ mod tests {
                     &directory,
                     &ProjectMap::empty(),
                     &token(),
+                    &caller(),
                     &room("example-repo", scope)
                 )
                 .await,
@@ -546,34 +555,36 @@ mod tests {
         let projects = map();
         for scope in [Scope::Project, ticket(), repo(EXAMPLE_REPO)] {
             assert_eq!(
-                authorise_join(&Untaught, &projects, &token(), &room("example-repo", scope)).await,
+                authorise_join(
+                    &Untaught,
+                    &projects,
+                    &token(),
+                    &caller(),
+                    &room("example-repo", scope)
+                )
+                .await,
                 Err(Denied::NotAuthorised)
             );
         }
     }
 
-    /// Answers `login` with whichever login the token names (`token:login`),
-    /// and refuses a token without one. Never asked `can_read`.
-    struct Logins;
-
-    impl Directory for Logins {
-        async fn login(&self, token: &SecretToken) -> Result<String, Denied> {
-            token
-                .expose()
-                .strip_prefix("token:")
-                .map(str::to_owned)
-                .ok_or(Denied::NotAuthorised)
+    /// Fails the test if it is asked anything at all: a named room is decided
+    /// from configuration and the connection's identity alone.
+    struct Silent;
+    impl Directory for Silent {
+        async fn login(&self, _token: &SecretToken) -> Result<String, Denied> {
+            panic!("asked for a login")
         }
         async fn is_member(&self, _token: &SecretToken) -> Result<bool, Denied> {
-            Ok(true)
+            panic!("asked for membership")
         }
         async fn can_read(&self, _token: &SecretToken, _repo: &RepoSlug) -> RepoAccess {
             panic!("a named room never asks about repos")
         }
     }
 
-    fn as_login(login: &str) -> SecretToken {
-        SecretToken::new(format!("token:{login}"))
+    fn as_identity(name: &str) -> HostId {
+        HostId::try_from(name).unwrap()
     }
 
     fn ops() -> sealmesh_chat_wire::RoomName {
@@ -597,56 +608,66 @@ mod tests {
     async fn a_named_room_admits_its_members_and_nobody_else() {
         let projects = with_ops();
         let room = RoomId::named(ops());
-        for member in ["claude", "grokbot", "Claude"] {
+        for member in ["claude", "grokbot"] {
             assert_eq!(
-                authorise_join(&Logins, &projects, &as_login(member), &room).await,
+                authorise_join(&Silent, &projects, &token(), &as_identity(member), &room).await,
                 Ok(()),
                 "{member}"
             );
         }
-        for outsider in ["mallory", "claude-2"] {
+        for outsider in ["mallory", "claude-2", "sandbank"] {
             assert_eq!(
-                decide(&Logins, &projects, &as_login(outsider), &room).await,
+                decide(&Silent, &projects, &token(), &as_identity(outsider), &room).await,
                 Err(Refusal::NotANamedMember),
                 "{outsider}"
             );
         }
-        // No identity at all is no member.
+    }
+
+    #[tokio::test]
+    async fn a_named_room_is_decided_by_identity_not_by_the_tokens_login() {
+        // The token belongs to the OS user (the std router's one member), but
+        // a seat holds rooms under its own identity, so the login never
+        // decides a named room: an agent seat cannot borrow the owner's name
+        // and the owner's login is not a member just for holding the secret.
+        let projects = with_ops();
+        let room = RoomId::named(ops());
+        let owner = SecretToken::new("token:claude".to_owned());
         assert_eq!(
-            decide(&Logins, &projects, &SecretToken::new(String::new()), &room).await,
+            decide(&Silent, &projects, &owner, &as_identity("mallory"), &room).await,
             Err(Refusal::NotANamedMember)
+        );
+        assert_eq!(
+            decide(&Silent, &projects, &owner, &as_identity("grokbot"), &room).await,
+            Ok(())
         );
     }
 
     #[tokio::test]
     async fn a_named_room_the_router_was_not_given_is_refused_without_asking() {
-        /// Fails the test if it is asked anything at all.
-        struct Silent;
-        impl Directory for Silent {
-            async fn login(&self, _token: &SecretToken) -> Result<String, Denied> {
-                panic!("asked for a login")
-            }
-            async fn is_member(&self, _token: &SecretToken) -> Result<bool, Denied> {
-                panic!("asked for membership")
-            }
-        }
-
         // A cloud router: no named rooms at all.
         let ops_room = RoomId::named(ops());
         assert_eq!(
-            decide(&Silent, &map(), &as_login("claude"), &ops_room).await,
+            decide(&Silent, &map(), &token(), &as_identity("claude"), &ops_room).await,
             Err(Refusal::UnknownNamedRoom)
         );
         // A std router that has `ops` but not `dev`.
         let dev = RoomId::named(sealmesh_chat_wire::RoomName::try_from("dev").unwrap());
         assert_eq!(
-            decide(&Silent, &with_ops(), &as_login("claude"), &dev).await,
+            decide(&Silent, &with_ops(), &token(), &as_identity("claude"), &dev).await,
             Err(Refusal::UnknownNamedRoom)
         );
         // `ops` spelled under a real project is not the named room.
         let misspelled = room("example-repo", Scope::Named(ops()));
         assert_eq!(
-            decide(&Silent, &with_ops(), &as_login("claude"), &misspelled).await,
+            decide(
+                &Silent,
+                &with_ops(),
+                &token(),
+                &as_identity("claude"),
+                &misspelled
+            )
+            .await,
             Err(Refusal::UnknownNamedRoom)
         );
     }

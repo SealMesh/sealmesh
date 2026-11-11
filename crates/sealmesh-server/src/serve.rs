@@ -41,8 +41,11 @@ impl From<tokio::net::UnixListener> for Listener {
 /// A TCP connection records its peer address for the handshake, so a
 /// directory that identifies by peer (otw: Tailscale whois) can ask about it.
 /// A directory that identifies by token never looks at it.
-pub async fn run<D: Directory + 'static>(app: App<D>, listener: Listener) -> Result<()> {
-    let router = router(Arc::new(app));
+pub async fn run<D: Directory + 'static>(
+    app: impl Into<Arc<App<D>>>,
+    listener: Listener,
+) -> Result<()> {
+    let router = router(app.into());
     match listener {
         Listener::Tcp(listener) => axum::serve(
             listener,

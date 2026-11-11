@@ -22,9 +22,9 @@ path = "src/lib.rs"
 
 [features]
 default = ["std-router"]
-# The router, embeddable in the daemon for `[mesh] mode = "std"`. The std PR
-# wires it in; this only makes the library available.
-std-router = ["dep:sealmesh-server"]
+# The router, run inside the daemon for `[mesh] mode = "std"`, and the
+# agents.sock HTTP link that seats configured agents in it.
+std-router = ["dep:sealmesh-server", "dep:axum"]
 
 [dependencies]
 sealmesh-chat-wire = { workspace = true }
@@ -33,6 +33,7 @@ sealmesh-server = { workspace = true, optional = true }
 sealmesh-wire = { workspace = true }
 
 anyhow = { workspace = true }
+axum = { workspace = true, optional = true }
 clap = { workspace = true }
 dirs = { workspace = true }
 futures-util = { workspace = true }
@@ -40,9 +41,11 @@ gix = { workspace = true }
 jiff = { workspace = true }
 octocrab = { workspace = true }
 regex-lite = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+subtle = { workspace = true }
 sysinfo = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "net", "sync", "io-util"] }

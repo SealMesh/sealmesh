@@ -487,10 +487,7 @@ mod tests {
                 }
             }
         });
-        tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, false)
-            .await
-            .unwrap()
-            .0
+        client::open(&format!("ws://{addr}")).await.unwrap()
     }
 
     fn map() -> Vec<ProjectEntry> {

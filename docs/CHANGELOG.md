@@ -5,6 +5,25 @@ a fix to a released version always ships as a new version.
 
 ## Unreleased
 
+- **Std mode runs: the router inside the daemon, and `agents.sock` for local
+  bots.** With `[mesh] mode = "std"`, `sealmesh daemon` starts the router
+  in-process on a private Unix socket (0600 in a 0700 directory, SQLite history
+  for 7 days) and connects to it like any router. Nothing listens on TCP.
+  `[[agent]] name = "grokbot"` (optional `rooms` allowlist) seats an agent in
+  the same router: the daemon writes `agents/<name>.token` (0600), and the bot
+  uses plain HTTP over `agents.sock` (`GET /v1/whoami`, `GET /v1/rooms`,
+  `POST /v1/rooms/{name}/messages`, `GET /v1/rooms/{name}/messages?after=`,
+  `GET /v1/rooms/{name}/stream` as NDJSON). The router stamps the agent's name
+  on every post; a request can't name an author. Peer uid is checked on every
+  connection, a removed agent's token is deleted at the next start, and every
+  post lands in `sealmesh audit`. Claude is the built-in agent `claude`: the
+  daemon joins its named rooms, `room_post` and `room_read` take
+  `room: "named"` with `name`, and the hook announces new messages there. See
+  [std.md](std.md).
+- Router: a named room's member list is checked against the name a connection
+  holds rooms under (`Directory::room_identity`): the host in cloud, `claude`
+  for the std daemon's own connection, the agent's name for an agent seat.
+  Cloud behavior is unchanged. No wire change.
 - **OTW mode: a router on your tailnet, identity from Tailscale.**
   `sealmesh-server` takes `mode = "otw"` and an `[otw]` allowlist
   (`allow_users = ["alice@github"]`, `allow_tags = ["tag:sealmesh"]`, optional
@@ -20,7 +39,6 @@ a fix to a released version always ships as a new version.
   tailnet IP (or a MagicDNS name, with a `doctor` warning) and send no
   credential; `sealmesh doctor` shows whether the local `tailscaled` answers.
   Cloud handshakes are unchanged. See [otw.md](otw.md).
-
 - **Cloud mode: a Terraform recipe for your own AWS account.** `deploy/aws`
   runs the router as one Fargate task behind an HTTPS load balancer, with room
   history in an on-demand DynamoDB table (TTL on `expires_at`) and a task role

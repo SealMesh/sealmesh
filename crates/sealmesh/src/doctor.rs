@@ -55,6 +55,11 @@ pub async fn run(config: &Config) -> Result<()> {
     if let Some(dir) = paths::cache_home() {
         println!("cache             {}", dir.join("sealmesh").display());
     }
+    if config.mode() == Mode::Std {
+        for line in std_lines(config) {
+            println!("{line}");
+        }
+    }
 
     println!("\nallowed repos");
     let gate = config.gate()?;
@@ -249,6 +254,77 @@ fn tailscaled_line(socket: &std::path::Path, status: Result<(), String>) -> Stri
             socket.display()
         ),
     }
+}
+
+/// Whether something accepts connections on the Unix socket at `path`.
+fn socket_line(path: Option<&std::path::Path>) -> String {
+    let Some(path) = path else {
+        return "unavailable: no home directory".to_owned();
+    };
+    let state = if std::os::unix::net::UnixStream::connect(path).is_ok() {
+        "ok, listening"
+    } else if path.exists() {
+        "NOT LISTENING (a socket file is there; is `sealmesh daemon` running?)"
+    } else {
+        "not running (start `sealmesh daemon`)"
+    };
+    format!("{} ({state})", path.display())
+}
+
+/// Std mode's own lines: the router socket, `agents.sock`, Claude's rooms,
+/// and each agent with its rooms and its token file's mode. Never a token.
+fn std_lines(config: &Config) -> Vec<String> {
+    let mut lines = vec![format!(
+        "router socket     {}",
+        socket_line(paths::local_router_socket().as_deref())
+    )];
+    if config.agents.is_empty() {
+        lines.push("agents.sock       off (no [[agent]] blocks)".to_owned());
+    } else {
+        lines.push(format!(
+            "agents.sock       {}",
+            socket_line(paths::agents_socket().as_deref())
+        ));
+    }
+    let rooms_of = |name: &sealmesh_wire::HostId| {
+        let rooms = config.agent_rooms(name);
+        if rooms.is_empty() {
+            "no rooms".to_owned()
+        } else {
+            rooms
+                .iter()
+                .map(|room| format!("#{room}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    lines.push("\nagents (std mode)".to_owned());
+    if let Ok(claude) = sealmesh_wire::HostId::try_from(crate::config::BUILT_IN_AGENT) {
+        lines.push(format!(
+            "  {claude:<12}  built in (MCP tools)  {}",
+            rooms_of(&claude)
+        ));
+    }
+    let tokens = paths::agent_tokens_dir();
+    for agent in &config.agents {
+        let token = tokens.as_ref().map_or_else(
+            || "token: no home directory".to_owned(),
+            |dir| {
+                let path = crate::agent_link::tokens::token_path(dir, &agent.name);
+                format!(
+                    "token {} {}",
+                    path.display(),
+                    crate::agent_link::tokens::describe_file(&path)
+                )
+            },
+        );
+        lines.push(format!(
+            "  {:<12}  {}\n                {token}",
+            agent.name,
+            rooms_of(&agent.name)
+        ));
+    }
+    lines
 }
 
 fn host_line(mode: Mode) -> &'static str {
@@ -525,6 +601,35 @@ mod tests {
         assert_eq!(
             credential_heading(&std.credential_source().unwrap()),
             "local router secret"
+        );
+    }
+
+    #[test]
+    fn the_doctor_lists_each_std_agent_with_its_rooms_and_token_file_and_never_a_token() {
+        let config: Config = toml::from_str(
+            "[mesh]\nmode = \"std\"\n\
+             [[room]]\nname = \"ops\"\nmembers = [\"claude\", \"grokbot\"]\n\
+             [[room]]\nname = \"bots\"\nmembers = [\"grokbot\"]\n\
+             [[agent]]\nname = \"grokbot\"\nrooms = [\"ops\"]",
+        )
+        .unwrap();
+        let text = std_lines(&config).join("\n");
+        assert!(text.contains("router socket"), "{text}");
+        assert!(text.contains("agents.sock"), "{text}");
+        assert!(text.contains("claude"), "{text}");
+        assert!(text.contains("grokbot.token"), "{text}");
+        // The allowlist narrows grokbot to #ops, though #bots lists it.
+        let grok = text
+            .lines()
+            .find(|line| line.trim_start().starts_with("grokbot"))
+            .unwrap();
+        assert!(grok.contains("#ops") && !grok.contains("#bots"), "{grok}");
+
+        let none: Config = toml::from_str("[mesh]\nmode = \"std\"").unwrap();
+        assert!(
+            std_lines(&none)
+                .join("\n")
+                .contains("off (no [[agent]] blocks)")
         );
     }
 

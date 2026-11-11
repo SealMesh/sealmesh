@@ -48,6 +48,12 @@ pub struct Config {
     /// cloud config that lists one is refused at load.
     #[serde(default, rename = "room")]
     pub rooms: Vec<RoomConfig>,
+    /// Agents that reach named rooms over `agents.sock`
+    /// (`[[agent]] name = "grokbot"`). `std` only. Each gets a bearer token
+    /// file the daemon writes, and every post it makes is stamped with this
+    /// name: an agent never says who it is.
+    #[serde(default, rename = "agent")]
+    pub agents: Vec<AgentConfig>,
     #[serde(default)]
     pub claude: ClaudeConfig,
     /// Tools described here rather than in Rust. Empty by default, so this
@@ -117,6 +123,26 @@ pub struct RoomConfig {
     /// Who may join. Compared, at the router, against the connecting
     /// identity's label (see `sealmesh_server::named_rooms`).
     pub members: Vec<sealmesh_wire::HostId>,
+}
+
+/// The built-in agent the std daemon's own router connection speaks for:
+/// Claude, through the MCP room tools and the daemon socket. A `[[room]]`
+/// lists it by this name; an `[[agent]]` block may not take it.
+pub const BUILT_IN_AGENT: &str = "claude";
+
+/// One `[[agent]]` block: an agent that reaches named rooms over
+/// `agents.sock`, identified by a token the daemon issues, never by anything
+/// it says about itself.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    /// The agent's name: the label `[[room]] members` lists and the author
+    /// stamped on every post it makes. 1-32 chars of `[a-z0-9-]`.
+    pub name: sealmesh_wire::HostId,
+    /// An optional allowlist narrowing which of the rooms that list this agent
+    /// it may use. Absent means every room that lists it.
+    #[serde(default)]
+    pub rooms: Option<Vec<sealmesh_chat_wire::RoomName>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -375,6 +401,7 @@ impl Config {
             self.router_url()?;
         }
         self.validate_rooms()?;
+        self.validate_agents()?;
         crate::collect::generic::validate(&self.provider)?;
         self.events.validate()?;
         self.declared.validate()?;
@@ -465,6 +492,76 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    fn validate_agents(&self) -> Result<()> {
+        if self.agents.is_empty() {
+            return Ok(());
+        }
+        if self.mode() != Mode::Std {
+            bail!(
+                "[[agent]] is set, but agents.sock exists only in std mode, where the router \
+                 runs inside the daemon on this machine; remove the [[agent]] blocks or set \
+                 [mesh] mode = \"std\""
+            );
+        }
+        let mut seen = BTreeSet::new();
+        for agent in &self.agents {
+            if agent.name.as_str() == BUILT_IN_AGENT {
+                bail!(
+                    "[[agent]] {BUILT_IN_AGENT} is built in: it is Claude, reaching rooms \
+                     through the MCP tools. Name the agent something else"
+                );
+            }
+            if !seen.insert(&agent.name) {
+                bail!("[[agent]] {} is declared twice", agent.name);
+            }
+            for name in agent.rooms.iter().flatten() {
+                let listed = self
+                    .rooms
+                    .iter()
+                    .find(|room| &room.name == name)
+                    .is_some_and(|room| room.members.contains(&agent.name));
+                if !listed {
+                    bail!(
+                        "[[agent]] {} allows room {name}, but no [[room]] {name} lists {} as a \
+                         member. An allowlist only narrows membership; add it to that room's \
+                         members first",
+                        agent.name,
+                        agent.name
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The named rooms `agent` may use: every `[[room]]` that lists it as a
+    /// member, narrowed to its `rooms` allowlist when it has one. For
+    /// [`BUILT_IN_AGENT`], every room that lists `claude`. In config order.
+    pub fn agent_rooms(&self, agent: &sealmesh_wire::HostId) -> Vec<sealmesh_chat_wire::RoomName> {
+        let allowlist = self
+            .agents
+            .iter()
+            .find(|configured| &configured.name == agent)
+            .and_then(|configured| configured.rooms.as_ref());
+        self.rooms
+            .iter()
+            .filter(|room| room.members.contains(agent))
+            .filter(|room| allowlist.is_none_or(|allowed| allowed.contains(&room.name)))
+            .map(|room| room.name.clone())
+            .collect()
+    }
+
+    /// The members `[[room]] name` lists, or `None` for a room not configured.
+    pub fn room_members(
+        &self,
+        name: &sealmesh_chat_wire::RoomName,
+    ) -> Option<&[sealmesh_wire::HostId]> {
+        self.rooms
+            .iter()
+            .find(|room| &room.name == name)
+            .map(|room| room.members.as_slice())
     }
 
     pub fn collect_options(&self) -> crate::collect::Options {
@@ -1207,5 +1304,68 @@ mod tests {
         ] {
             assert!(std_config(bad).is_err(), "accepted {bad}");
         }
+    }
+
+    const AGENTS: &str = "[[room]]\nname = \"ops\"\nmembers = [\"claude\", \"grokbot\", \"pagerbot\"]\n\
+         [[room]]\nname = \"dev\"\nmembers = [\"claude\", \"grokbot\"]\n\
+         [[agent]]\nname = \"grokbot\"\n\
+         [[agent]]\nname = \"pagerbot\"\nrooms = [\"ops\"]";
+
+    fn host(name: &str) -> sealmesh_wire::HostId {
+        sealmesh_wire::HostId::try_from(name).unwrap()
+    }
+
+    fn names(rooms: &[sealmesh_chat_wire::RoomName]) -> Vec<&str> {
+        rooms
+            .iter()
+            .map(sealmesh_chat_wire::RoomName::as_str)
+            .collect()
+    }
+
+    #[test]
+    fn an_agent_uses_the_rooms_that_list_it_narrowed_by_its_allowlist() {
+        let config = std_config(AGENTS).unwrap();
+        assert_eq!(config.agents.len(), 2);
+        assert_eq!(names(&config.agent_rooms(&host("grokbot"))), ["ops", "dev"]);
+        assert_eq!(names(&config.agent_rooms(&host("pagerbot"))), ["ops"]);
+        assert_eq!(names(&config.agent_rooms(&host("claude"))), ["ops", "dev"]);
+        assert!(config.agent_rooms(&host("mallory")).is_empty());
+    }
+
+    #[test]
+    fn agents_exist_only_in_std_mode() {
+        let agent = "[[agent]]\nname = \"grokbot\"";
+        let error = config_with(agent).unwrap_err();
+        assert!(format!("{error:#}").contains("std mode"), "{error:#}");
+        assert!(config_with(&format!("[mesh]\nmode = \"otw\"\n{agent}")).is_err());
+        assert!(std_config(agent).is_ok());
+    }
+
+    #[test]
+    fn a_bad_agent_is_refused_at_load() {
+        for bad in [
+            // The built-in agent's name.
+            "[[agent]]\nname = \"claude\"",
+            // Declared twice.
+            "[[agent]]\nname = \"grokbot\"\n[[agent]]\nname = \"grokbot\"",
+            // Not a name.
+            "[[agent]]\nname = \"Grok Bot\"",
+            "[[agent]]\nname = \"../grokbot\"",
+            // A field an agent does not have: identity is never configured
+            // by the agent, nor an author set.
+            "[[agent]]\nname = \"grokbot\"\nauthor = \"claude\"",
+            // An allowlist naming a room that does not list it.
+            "[[room]]\nname = \"ops\"\nmembers = [\"claude\"]\n[[agent]]\nname = \"grokbot\"\nrooms = [\"ops\"]",
+            // An allowlist naming a room that does not exist.
+            "[[agent]]\nname = \"grokbot\"\nrooms = [\"ghost\"]",
+        ] {
+            assert!(std_config(bad).is_err(), "accepted {bad}");
+        }
+    }
+
+    #[cfg(feature = "std-router")]
+    #[test]
+    fn the_built_in_agent_is_the_name_the_router_gives_the_daemon() {
+        assert_eq!(BUILT_IN_AGENT, sealmesh_server::local_owner::BUILT_IN_AGENT);
     }
 }

@@ -96,7 +96,22 @@ impl Directory for LocalOwner {
 
     // `recent_pulls` keeps the trait default, `Err(PullsUnverifiable)`: no
     // pull requests are listed, so archive-on-merge never fires here.
+
+    /// The daemon's own connection holds rooms as the built-in agent
+    /// [`BUILT_IN_AGENT`]: it carries Claude's room traffic (the MCP tools and
+    /// `sealmesh chat` reach rooms through it), so that is the name a named
+    /// room lists and the author its posts carry. Other agents never hold
+    /// this connection; the daemon seats each of them in-process under its
+    /// own configured name.
+    fn room_identity(&self, host: &HostId) -> HostId {
+        HostId::try_from(BUILT_IN_AGENT).unwrap_or_else(|_| host.clone())
+    }
 }
+
+/// The agent the std daemon's own router connection speaks for: Claude, via
+/// the MCP room tools and the daemon's local socket. A `[[room]]` lists it by
+/// this name, and an `[[agent]]` block may not take it.
+pub const BUILT_IN_AGENT: &str = "claude";
 
 /// The OS user running this process, from `USER` or `LOGNAME`. `local` when
 /// neither is set, which still folds into a host name.
@@ -217,6 +232,14 @@ mod tests {
             );
             assert!(crate::auth::authenticate(&owner, &token).await.is_err());
         }
+    }
+
+    #[test]
+    fn the_owners_connection_holds_rooms_as_the_built_in_agent() {
+        let host = owner().host().unwrap();
+        assert_eq!(owner().room_identity(&host).as_str(), BUILT_IN_AGENT);
+        // `who` still names the machine by the OS user.
+        assert_eq!(host.as_str(), "santa-maria");
     }
 
     #[tokio::test]

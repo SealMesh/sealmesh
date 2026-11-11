@@ -182,31 +182,12 @@ async fn open_history(config: &ServerConfig) -> Result<(Arc<dyn RoomHistory>, St
         "sqlite" => {
             let path = history_path(config.setting(HISTORY_PATH_VAR))?;
             let store = SqliteHistory::open(&path)?;
-            spawn_sweeper(store.clone());
+            store.spawn_sweeper(SWEEP_INTERVAL);
             Ok((Arc::new(store), format!("SQLite at {}", path.display())))
         }
         "dynamodb" => open_dynamodb(config).await,
         other => bail!("{HISTORY_BACKEND_VAR} must be \"sqlite\" or \"dynamodb\", not {other:?}"),
     }
-}
-
-/// Deletes expired SQLite rows on an interval, for as long as the router runs.
-/// A failed sweep is logged and retried next time: reads never serve an
-/// expired message either way.
-fn spawn_sweeper(store: SqliteHistory) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(SWEEP_INTERVAL);
-        loop {
-            tick.tick().await;
-            let swept = match history::now_epoch() {
-                Ok(now) => store.sweep_expired(now).await,
-                Err(error) => Err(error),
-            };
-            if let Err(error) = swept {
-                eprintln!("sweeping expired room messages failed: {error}");
-            }
-        }
-    });
 }
 
 #[cfg(feature = "dynamodb")]

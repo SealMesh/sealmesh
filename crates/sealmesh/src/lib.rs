@@ -1,3 +1,4 @@
+pub mod agent_link;
 pub mod audit;
 pub mod chat;
 pub mod client;
@@ -18,6 +19,8 @@ pub mod policy;
 pub mod progress;
 pub mod render;
 pub mod room;
+#[cfg(feature = "std-router")]
+pub mod std_mode;
 pub mod who;
 
 pub use sealmesh_wire as wire;

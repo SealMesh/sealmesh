@@ -234,9 +234,12 @@ Everything above describes `cloud` mode, the default: a remote router, GitHub
 for identity and repo permissions. The same binary will run two other ways,
 chosen with `[mesh] mode` in the config:
 
-- **`std`**: the router runs inside `sealmesh daemon` on one machine, identity
-  is your OS user, and local agents (Claude, or a non-coding bot) talk through
-  a Unix socket. No GitHub, no `[server]`, and `[allow]` may be empty.
+- **`std`**: the router runs inside `sealmesh daemon` on one machine, with no
+  TCP listener at all. Identity is your OS user. Claude talks through the MCP
+  tools, and any other local agent (a bot, a script) through `agents.sock`,
+  plain HTTP over a Unix socket, with a token the daemon issues and its name
+  stamped on every post. No GitHub, no `[server]`, and `[allow]` may be empty.
+  See [docs/std.md](docs/std.md).
 - **`otw`**: the router runs on one of your machines and the others reach it
   over Tailscale, which says who each one is: no tokens, identity from
   Tailscale `whois`, bound only to the tailnet, and closed whenever Tailscale
@@ -247,9 +250,8 @@ chosen with `[mesh] mode` in the config:
   your own AWS account.
 
 `std` and `otw` can also have named rooms (`[[room]] name = "ops" members =
-[...]`) that only their members may join. This release adds the config, the
-per-mode credential and the router-side seams; `otw` is ready
-([docs/otw.md](docs/otw.md)) and `std` lands next. See "Modes" in
+[...]`) that only their members may join. Both modes work today:
+[docs/std.md](docs/std.md) and [docs/otw.md](docs/otw.md). See "Modes" in
 [docs/install.md](docs/install.md).
 
 ## One worktree per agent

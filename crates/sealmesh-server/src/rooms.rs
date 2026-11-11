@@ -1060,7 +1060,12 @@ impl Membership<'_> {
             None => return Err(JoinRefusal::Disconnected),
         }
 
-        match tokio::time::timeout(budget, authorise_join(directory, projects, token, room)).await {
+        match tokio::time::timeout(
+            budget,
+            authorise_join(directory, projects, token, &self.host, room),
+        )
+        .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(_denied)) => return Err(JoinRefusal::NotAuthorised),
             Err(_elapsed) => return Err(JoinRefusal::TimedOut),
@@ -1675,7 +1680,7 @@ impl Membership<'_> {
             let kept = matches!(
                 tokio::time::timeout_at(
                     deadline,
-                    authorise_join(directory, projects, token, &room)
+                    authorise_join(directory, projects, token, &self.host, &room)
                 )
                 .await,
                 Ok(Ok(()))

@@ -176,8 +176,10 @@ members = ["claude", "grokbot"]
 ```
 
 A cloud config with a `[[room]]` block is refused at load: a cloud router
-decides rooms from GitHub. `otw` is ready: [otw.md](otw.md) sets up the
-router and the daemons. Running the embedded `std` router follows next.
+decides rooms from GitHub. Both other modes run today: [std.md](std.md) has
+the embedded router and `agents.sock` for local bots (`[[agent]] name =
+"grokbot"`), with the full config, curl examples and security model, and
+[otw.md](otw.md) sets up the tailnet router and the daemons.
 
 ### `[events]` (deprecated, off by default)
 

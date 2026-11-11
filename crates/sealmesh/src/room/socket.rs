@@ -110,7 +110,7 @@ fn bind_with(path: &Path, before_rename: impl FnOnce(&Path)) -> Result<(UnixList
 /// Creates the socket's directory as 0700 if it is missing. An existing one
 /// must be a real directory, not a symlink, and belong to `uid`; one with
 /// wider permissions is narrowed. All of it before anything is bound there.
-fn prepare_dir(dir: &Path, uid: u32) -> Result<()> {
+pub(crate) fn prepare_dir(dir: &Path, uid: u32) -> Result<()> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;

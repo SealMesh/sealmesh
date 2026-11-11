@@ -377,7 +377,10 @@ async fn serve_daemon<D: Directory>(
         }
         None => false,
     };
-    let (mut deliveries, membership) = app.rooms.connect(host.clone());
+    // Rooms are held under the directory's room identity: the host itself
+    // everywhere but std mode, where the daemon's connection speaks for the
+    // built-in agent `claude` (see `Directory::room_identity`).
+    let (mut deliveries, membership) = app.rooms.connect(app.directory.room_identity(&host));
     let mut revalidate = revalidation_timer(app.room_revalidate_every, jitter_seed(&host));
 
     // One access check at a time per connection, which bounds the GitHub calls
