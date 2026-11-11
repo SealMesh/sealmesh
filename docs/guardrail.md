@@ -189,7 +189,7 @@ Every deny and every ignored-policy warning goes to
 
 ```text
 2026-11-10T12:00:00Z  guardrail  denied Bash (deny #1) session a04e3d0f: Force-pushing main is off limits. Push a branch and open a PR.
-2026-11-10T12:05:00Z  guardrail  WARNING: policy ignored, tool calls allowed: /etc/sealmesh/policy.toml is owned by uid 501, not root
+2026-11-10T12:05:00Z  guardrail  WARNING: policy ignored, tool calls allowed: /etc/sealmesh/policy.toml is not owned by root
 ```
 
 A deny line records the tool, which rule (`built-in`, `deny #N` counting

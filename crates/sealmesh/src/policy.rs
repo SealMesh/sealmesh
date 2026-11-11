@@ -349,14 +349,15 @@ pub fn load(path: &Path, trusted_owner: u32) -> Loaded {
 #[cfg(unix)]
 fn tamper_problem(meta: &std::fs::Metadata, trusted_owner: u32) -> Option<String> {
     use std::os::unix::fs::MetadataExt as _;
-    let uid = meta.uid();
-    if uid != trusted_owner {
+    // The message names no uid: `ls -l` shows the owner, and a user id is
+    // not something this hook needs to repeat into stderr and the audit log.
+    if meta.uid() != trusted_owner {
         let wanted = if trusted_owner == 0 {
-            "root".to_owned()
+            "root"
         } else {
-            format!("uid {trusted_owner}")
+            "the trusted user"
         };
-        return Some(format!("is owned by uid {uid}, not {wanted}"));
+        return Some(format!("is not owned by {wanted}"));
     }
     let mode = meta.mode() & 0o7777;
     (mode & 0o022 != 0).then(|| format!("is writable by group or others (mode {mode:04o})"))
@@ -1145,13 +1146,16 @@ mod tests {
         let Loaded::Ignored(reason) = load(&path, other) else {
             panic!("trusted a file owned by the wrong uid");
         };
-        assert!(reason.contains("is owned by uid"), "{reason}");
+        assert!(
+            reason.ends_with("is not owned by the trusted user"),
+            "{reason}"
+        );
         // The production check names root.
         if my_uid(&path) != 0 {
             let Loaded::Ignored(reason) = load(&path, TRUSTED_OWNER) else {
                 panic!("trusted a user-owned file as root's");
             };
-            assert!(reason.ends_with("not root"), "{reason}");
+            assert!(reason.ends_with("is not owned by root"), "{reason}");
         }
         assert!(matches!(
             check(
