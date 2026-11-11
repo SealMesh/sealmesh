@@ -3494,7 +3494,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sealmesh"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3525,7 +3525,7 @@ dependencies = [
 
 [[package]]
 name = "sealmesh-chat-wire"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sealmesh-wire",
  "serde",
@@ -3536,7 +3536,7 @@ dependencies = [
 
 [[package]]
 name = "sealmesh-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3557,7 +3557,7 @@ dependencies = [
 
 [[package]]
 name = "sealmesh-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sealmesh-chat-wire",
  "sealmesh-wire",
@@ -3568,7 +3568,7 @@ dependencies = [
 
 [[package]]
 name = "sealmesh-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "sealmesh-wire"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "jiff",
  "serde",

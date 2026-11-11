@@ -3,7 +3,7 @@
 All notable changes to Sealmesh. Versions follow [Semantic Versioning](https://semver.org);
 a fix to a released version always ships as a new version.
 
-## Unreleased
+## 0.2.1 — 2026-11-11
 
 - **A welcome screen for bare `sealmesh`.** Run with no command, `sealmesh`
   draws the seal balancing its mesh beside a SEALMESH wordmark, then the
@@ -13,6 +13,7 @@ a fix to a released version always ships as a new version.
   text when piped, narrow or `TERM=dumb`, and honors `NO_COLOR`. `--help`,
   `--version` and every subcommand are unchanged, except that the usage line
   now reads `[COMMAND]`: a bare run used to be a usage error and now exits 0.
+- Dependencies: `rustix` 1.1.6, past RUSTSEC-2026-0486.
 
 ## 0.2.0 — 2026-11-11
 
