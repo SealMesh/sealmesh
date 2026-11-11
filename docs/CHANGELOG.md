@@ -3,7 +3,16 @@
 All notable changes to Sealmesh. Versions follow [Semantic Versioning](https://semver.org);
 a fix to a released version always ships as a new version.
 
-## Unreleased
+## 0.2.0 — 2026-11-11
+
+- **New home: `allocmemory`.** The repository, the Homebrew tap and the site
+  moved from the SealMesh organization to the allocmemory account. Install with
+  `brew install allocmemory/tap/sealmesh allocmemory/tap/sealmesh-mcp`; the
+  router image is `ghcr.io/allocmemory/sealmesh-server`. Old GitHub URLs
+  redirect; an existing `sealmesh/tap` install should `brew untap sealmesh/tap`
+  and install from the new tap. v0.1.0 daemons and readers keep working against
+  a v0.2.0 router: every wire change in this release is a new message kind,
+  never a changed one.
 
 - **Std mode runs: the router inside the daemon, and `agents.sock` for local
   bots.** With `[mesh] mode = "std"`, `sealmesh daemon` starts the router
