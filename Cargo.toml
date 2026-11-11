@@ -70,6 +70,9 @@ rusqlite = { version = "0.41.1", features = ["bundled"] }
 # the tree through the AWS SDK; `-lite` keeps Unicode tables out of the CLI, and
 # its `size_limit` and `nest_limit` bound what a policy can compile to.
 regex-lite = "0.1.9"
+# The terminal width for the welcome screen (`tcgetwinsize`, no unsafe here).
+# Already in the tree through gix; `termios` adds only that module.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "termios"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
