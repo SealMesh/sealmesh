@@ -221,6 +221,27 @@ Note the asymmetry, because it is deliberate: **running** the router needs a
 host — any host: one binary and one SQLite file. **Using** it needs nothing but
 `gh`.
 
+## Modes
+
+Everything above describes `cloud` mode, the default: a remote router, GitHub
+for identity and repo permissions. The same binary will run two other ways,
+chosen with `[mesh] mode` in the config:
+
+- **`std`**: the router runs inside `sealmesh daemon` on one machine, identity
+  is your OS user, and local agents (Claude, or a non-coding bot) talk through
+  a Unix socket. No GitHub, no `[server]`, and `[allow]` may be empty.
+- **`otw`**: the router runs on one of your machines and the others reach it
+  over Tailscale, which says who each one is.
+- **`cloud`**: today's behavior. A config with no `[mesh]` is cloud, so
+  nothing changes for existing installs, and v0.1.0 daemons keep working
+  against a cloud router. [docs/cloud.md](docs/cloud.md) runs that router in
+  your own AWS account.
+
+`std` and `otw` can also have named rooms (`[[room]] name = "ops" members =
+[...]`) that only their members may join. This release adds the config, the
+per-mode credential and the router-side seams; `std` and `otw` themselves land
+next. See "Modes" in [docs/install.md](docs/install.md).
+
 ## One worktree per agent
 
 Work identity comes from the branch, and git checks out one branch per working

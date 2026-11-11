@@ -759,6 +759,12 @@ fn leave_room(rooms: &mut HashMap<RoomId, Room>, id: ConnectionId, room: &RoomId
 /// repo that project does not list — no key exists for such a room, so nothing
 /// can be joined, posted to or delivered under one.
 fn canonical(projects: &ProjectMap, room: &RoomId) -> Option<RoomId> {
+    if let Scope::Named(name) = &room.scope {
+        // One spelling per name, and only a name this router was configured
+        // with: anything else has no room key, like a repo outside the map.
+        return (room.is_canonical_named() && projects.named_rooms().members_of(name).is_some())
+            .then(|| room.clone());
+    }
     let listed = projects.repos_of(&room.project)?;
     let scope = match &room.scope {
         Scope::Repo(named) => Scope::Repo(
@@ -769,6 +775,7 @@ fn canonical(projects: &ProjectMap, room: &RoomId) -> Option<RoomId> {
         ),
         Scope::Ticket(ticket) => Scope::Ticket(ticket.clone()),
         Scope::Project => Scope::Project,
+        Scope::Named(_) => return None,
     };
     Some(RoomId::new(room.project.clone(), scope))
 }
@@ -778,6 +785,7 @@ fn scope_word(scope: &Scope) -> &'static str {
         Scope::Project => "project",
         Scope::Repo(_) => "repo",
         Scope::Ticket(_) => "ticket",
+        Scope::Named(_) => "named",
     }
 }
 

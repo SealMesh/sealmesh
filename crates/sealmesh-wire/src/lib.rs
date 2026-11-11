@@ -313,6 +313,17 @@ string_newtype! {
     ProjectId
 }
 
+impl ProjectId {
+    /// The project every named chat room carries (`sealmesh-chat-wire`'s
+    /// `Scope::Named`). One fixed value, so a room name is one room no matter
+    /// which peer spells it, and a router can refuse a named room that claims
+    /// any other project. Built like `ToolId::claude_code`; a test asserts it
+    /// passes validation.
+    pub fn named_rooms() -> Self {
+        Self("named".to_owned())
+    }
+}
+
 impl TryFrom<&str> for ProjectId {
     type Error = WireError;
 
@@ -780,6 +791,8 @@ mod tests {
         for built in [ToolId::claude_code(), ToolId::codex(), ToolId::declared()] {
             assert_eq!(ToolId::try_from(built.as_str()), Ok(built.clone()));
         }
+        let named = ProjectId::named_rooms();
+        assert_eq!(ProjectId::try_from(named.as_str()), Ok(named.clone()));
     }
 
     #[test]

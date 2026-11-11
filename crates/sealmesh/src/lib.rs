@@ -3,6 +3,7 @@ pub mod chat;
 pub mod client;
 pub mod collect;
 pub mod config;
+pub mod credential;
 pub mod daemon;
 pub mod declare;
 pub mod doctor;
@@ -19,3 +20,9 @@ pub mod room;
 pub mod who;
 
 pub use sealmesh_wire as wire;
+
+/// The router library, for a daemon that runs it in-process (`[mesh] mode =
+/// "std"`): `router::run(app, router::Listener::Unix(..))` over an
+/// `App<router::mode_directory::ModeDirectory>`.
+#[cfg(feature = "std-router")]
+pub use sealmesh_server as router;

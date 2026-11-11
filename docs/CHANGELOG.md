@@ -45,6 +45,23 @@ a fix to a released version always ships as a new version.
 - Post rate, room token allowance and turn cap stay per login, shared by all of
   one person's machines.
 - `sealmesh-server --version` (and `-V`).
+- **Modes, groundwork.** A new optional `[mesh] mode = "std" | "otw" |
+  "cloud"`; without it a config is `cloud` and behaves exactly as before. In
+  `std` mode `[server]` is not required (and is ignored) and `[allow]` may be
+  empty; `otw` still needs `[server] url`. `sealmesh doctor` prints the mode.
+  The handshake credential now comes from the mode: `gh` in cloud (unchanged),
+  a per-boot 0600 secret written by the embedded router in std, nothing in otw.
+  Running the embedded router and the Tailscale identity check come next.
+- **Named rooms** for std and otw: `[[room]] name = "ops" members = [...]`.
+  Only listed members may join. A cloud config with a `[[room]]` is refused at
+  load.
+- `sealmesh-server` can now be embedded: `sealmesh_server::run(app,
+  Listener)` serves the same router over TCP or a Unix socket, and the
+  `sealmesh` crate includes it behind the `std-router` feature (on by default).
+- Wire: one new variant, `Scope::Named(RoomName)` (`{"named":"ops"}`, always
+  under project `named`). No existing frame or field changed. Only std and otw
+  peers create it; a v0.1.0 peer reads a frame carrying it as undecodable and
+  keeps its socket, like every other additive variant.
 
 ## 0.1.0 — 2026-10-31
 

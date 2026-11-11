@@ -27,8 +27,25 @@ pub struct Config {
     /// one takes the other's place at the router.
     #[serde(default)]
     pub machine: Option<sealmesh_proto::MachineName>,
-    pub server: ServerConfig,
+    /// Which of the three meshes this machine is part of. Optional: a config
+    /// without `[mesh]` is `cloud`, today's behaviour.
+    #[serde(default)]
+    pub mesh: MeshConfig,
+    /// The router to reach. Required in `cloud` and `otw` mode; ignored in
+    /// `std` mode, where the router runs inside the daemon. Read it through
+    /// [`Config::server`], which says why it is missing.
+    #[serde(default)]
+    pub server: Option<ServerConfig>,
+    /// What may be published. Required and non-empty in `cloud` and `otw`
+    /// mode; may be empty (or absent) in `std` mode, where the only reader is
+    /// this machine's own user.
+    #[serde(default)]
     pub allow: AllowConfig,
+    /// Named rooms (`[[room]] name = "ops" members = ["claude", "grokbot"]`).
+    /// `std` and `otw` only: a cloud router decides rooms from GitHub, and a
+    /// cloud config that lists one is refused at load.
+    #[serde(default, rename = "room")]
+    pub rooms: Vec<RoomConfig>,
     #[serde(default)]
     pub claude: ClaudeConfig,
     /// Tools described here rather than in Rust. Empty by default, so this
@@ -41,6 +58,63 @@ pub struct Config {
     pub declared: DeclaredConfig,
     #[serde(default)]
     pub chat: ChatConfig,
+}
+
+/// Where the router runs and who vouches for identity.
+///
+/// - `std`: the router runs inside this daemon; identity is the local OS
+///   user, proved by a per-boot secret file only that user can read.
+/// - `otw`: the router runs on one of your machines and is reached over
+///   Tailscale; identity comes from the tailnet, not from a token.
+/// - `cloud`: a remote router; identity is your GitHub login, and access
+///   follows your GitHub repo permissions. The default, and what every
+///   config written before modes existed means.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Std,
+    Otw,
+    #[default]
+    Cloud,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Std => "std",
+            Self::Otw => "otw",
+            Self::Cloud => "cloud",
+        }
+    }
+
+    /// Whether this mode reaches a router somewhere else, so `[server] url`
+    /// is required.
+    pub fn has_remote_router(self) -> bool {
+        !matches!(self, Self::Std)
+    }
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshConfig {
+    #[serde(default)]
+    pub mode: Mode,
+}
+
+/// One `[[room]]` block: a named room and the members who may join it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomConfig {
+    pub name: sealmesh_chat_wire::RoomName,
+    /// Who may join. Compared, at the router, against the connecting
+    /// identity's label (see `sealmesh_server::named_rooms`).
+    pub members: Vec<sealmesh_wire::HostId>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -190,10 +264,12 @@ fn is_loopback(url: &str) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AllowConfig {
+    #[serde(default)]
     pub repos: Vec<RepoSlug>,
+    #[serde(default)]
     pub paths: Vec<PathBuf>,
 }
 
@@ -239,16 +315,84 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.allow.repos.is_empty() {
-            bail!("allow.repos is empty, so nothing would ever be published");
+        let mode = self.mode();
+        if mode != Mode::Std {
+            if self.allow.repos.is_empty() {
+                bail!("allow.repos is empty, so nothing would ever be published");
+            }
+            if self.allow.paths.is_empty() {
+                bail!("allow.paths is empty, so nothing would ever be published");
+            }
         }
-        if self.allow.paths.is_empty() {
-            bail!("allow.paths is empty, so nothing would ever be published");
+        if mode.has_remote_router() {
+            // TODO(otw): check that an otw url names a tailnet host.
+            self.server()?.connect_url()?;
         }
-        self.server.connect_url()?;
+        self.validate_rooms()?;
         crate::collect::generic::validate(&self.provider)?;
         self.events.validate()?;
         self.declared.validate()?;
+        Ok(())
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mesh.mode
+    }
+
+    /// The remote router to reach. An error in `std` mode, where the router
+    /// runs inside the daemon and `[server]` is ignored, and when a mode that
+    /// needs one has none.
+    pub fn server(&self) -> Result<&ServerConfig> {
+        let mode = self.mode();
+        if !mode.has_remote_router() {
+            bail!(
+                "mode = \"std\" runs the router inside the daemon on this machine, so there is \
+                 no remote [server] to reach"
+            );
+        }
+        self.server.as_ref().ok_or_else(|| {
+            anyhow!("mode = \"{mode}\" reaches a router elsewhere, so [server] url is required")
+        })
+    }
+
+    /// Where this machine's handshake credential comes from, by mode.
+    pub fn credential_source(&self) -> Result<crate::credential::CredentialSource> {
+        crate::credential::CredentialSource::for_mode(self.mode())
+    }
+
+    /// The `[[room]]` blocks as the embedded router's table, for
+    /// `ProjectMap::with_named_rooms`.
+    #[cfg(feature = "std-router")]
+    pub fn named_rooms(&self) -> sealmesh_server::named_rooms::NamedRooms {
+        self.rooms
+            .iter()
+            .map(|room| (room.name.clone(), room.members.clone()))
+            .collect()
+    }
+
+    fn validate_rooms(&self) -> Result<()> {
+        if self.rooms.is_empty() {
+            return Ok(());
+        }
+        if self.mode() == Mode::Cloud {
+            bail!(
+                "[[room]] is set, but named rooms exist only in std and otw mode. A cloud \
+                 router decides who may join a room from GitHub; remove the [[room]] blocks or \
+                 set [mesh] mode"
+            );
+        }
+        let mut seen = BTreeSet::new();
+        for room in &self.rooms {
+            if !seen.insert(&room.name) {
+                bail!("[[room]] {} is declared twice", room.name);
+            }
+            if room.members.is_empty() {
+                bail!(
+                    "[[room]] {} lists no members, so nobody could join it",
+                    room.name
+                );
+            }
+        }
         Ok(())
     }
 
@@ -779,6 +923,136 @@ mod tests {
                 "discover() returned {}, which resolves against the cwd",
                 path.display()
             );
+        }
+    }
+
+    fn std_config(body: &str) -> Result<Config> {
+        let config: Config = toml::from_str(&format!("[mesh]\nmode = \"std\"\n{body}"))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    #[test]
+    fn a_config_without_mesh_is_cloud_and_needs_what_it_always_needed() {
+        let config = config_with("").unwrap();
+        assert_eq!(config.mode(), Mode::Cloud);
+        assert_eq!(
+            config.server().unwrap().connect_url().unwrap(),
+            "wss://router.example.com/v1/connect"
+        );
+        assert_eq!(
+            config.credential_source().unwrap(),
+            crate::credential::CredentialSource::GhCli
+        );
+
+        for missing in [
+            // No [server].
+            "[allow]\nrepos = [\"o/r\"]\npaths = [\"/tmp\"]",
+            // No [allow].
+            "[server]\nurl = \"https://router.example.com\"",
+            // Empty [allow].
+            "[server]\nurl = \"https://router.example.com\"\n[allow]\nrepos = []\npaths = []",
+        ] {
+            let config: Config = toml::from_str(missing).unwrap();
+            assert!(config.validate().is_err(), "cloud accepted {missing}");
+        }
+        let explicit: Config = toml::from_str(
+            "[mesh]\nmode = \"cloud\"\n[allow]\nrepos = [\"o/r\"]\npaths = [\"/tmp\"]",
+        )
+        .unwrap();
+        let error = explicit.validate().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("[server] url is required"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn a_std_config_needs_no_server_and_no_allow_list() {
+        let bare = std_config("").unwrap();
+        assert_eq!(bare.mode(), Mode::Std);
+        assert!(bare.server().is_err(), "std mode has no remote router");
+        assert!(bare.allow.repos.is_empty() && bare.allow.paths.is_empty());
+        assert!(bare.gate().unwrap().paths().is_empty());
+        assert!(matches!(
+            bare.credential_source().unwrap(),
+            crate::credential::CredentialSource::LocalSecret(_)
+        ));
+
+        // An empty [allow], and a [server] that is there but ignored, even
+        // one that would be refused in cloud mode.
+        let ignored = std_config(
+            "[server]\nurl = \"http://router.example.com\"\n[allow]\nrepos = []\npaths = []",
+        )
+        .unwrap();
+        assert!(ignored.server().is_err());
+    }
+
+    #[test]
+    fn otw_still_needs_its_router_url() {
+        let config: Config = toml::from_str(
+            "[mesh]\nmode = \"otw\"\n[allow]\nrepos = [\"o/r\"]\npaths = [\"/tmp\"]",
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+        let config = config_with("[mesh]\nmode = \"otw\"").unwrap();
+        assert_eq!(config.mode(), Mode::Otw);
+        assert_eq!(
+            config.credential_source().unwrap(),
+            crate::credential::CredentialSource::None
+        );
+    }
+
+    #[test]
+    fn an_unknown_mode_or_mesh_key_is_refused() {
+        assert!(toml::from_str::<Config>("[mesh]\nmode = \"lan\"").is_err());
+        assert!(toml::from_str::<Config>("[mesh]\nmode = \"STD\"").is_err());
+        assert!(toml::from_str::<Config>("[mesh]\nmode = \"std\"\nport = 1").is_err());
+    }
+
+    const OPS: &str = "[[room]]\nname = \"ops\"\nmembers = [\"claude\", \"grokbot\"]";
+
+    #[test]
+    fn named_rooms_load_in_std_and_otw_mode() {
+        let config = std_config(OPS).unwrap();
+        assert_eq!(config.rooms.len(), 1);
+        let ops = config.rooms.first().unwrap();
+        assert_eq!(ops.name.as_str(), "ops");
+        assert_eq!(ops.members.len(), 2);
+        let otw = config_with(&format!("[mesh]\nmode = \"otw\"\n{OPS}")).unwrap();
+        assert_eq!(otw.rooms.len(), 1);
+    }
+
+    #[cfg(feature = "std-router")]
+    #[test]
+    fn named_rooms_become_the_routers_table() {
+        let table = std_config(OPS).unwrap().named_rooms();
+        let ops = sealmesh_chat_wire::RoomName::try_from("ops").unwrap();
+        let claude = sealmesh_wire::HostId::try_from("claude").unwrap();
+        let mallory = sealmesh_wire::HostId::try_from("mallory").unwrap();
+        assert!(table.admits(&ops, &claude));
+        assert!(!table.admits(&ops, &mallory));
+        assert!(std_config("").unwrap().named_rooms().is_empty());
+    }
+
+    #[test]
+    fn cloud_mode_refuses_named_rooms_with_a_clear_error() {
+        let error = config_with(OPS).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("std and otw mode"), "{message}");
+    }
+
+    #[test]
+    fn a_bad_named_room_is_refused_at_load() {
+        let twice = format!("{OPS}\n{OPS}");
+        for bad in [
+            "[[room]]\nname = \"Ops\"\nmembers = [\"claude\"]",
+            "[[room]]\nname = \"ops\"\nmembers = [\"Claude Code\"]",
+            "[[room]]\nname = \"ops\"\nmembers = []",
+            "[[room]]\nname = \"ops\"\nmembers = [\"claude\"]\nowner = \"me\"",
+            twice.as_str(),
+        ] {
+            assert!(std_config(bad).is_err(), "accepted {bad}");
         }
     }
 }

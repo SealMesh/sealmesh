@@ -267,7 +267,7 @@ pub async fn run(config: &Config) -> Result<()> {
 }
 
 async fn session(config: &Config, watch: &mut Watch, rooms: &mut Rooms) -> Result<()> {
-    let Connected { socket, host } = client::connect(&config.server, Role::Daemon).await?;
+    let Connected { socket, host } = client::connect(config, Role::Daemon).await?;
     let machine = config.machine_name();
     match &machine {
         Some(machine) => eprintln!("connected as {host} from {machine}"),

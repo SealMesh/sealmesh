@@ -2,9 +2,10 @@
 //! touches a credential.
 //!
 //! There is no credential code here. [`RouterAccess::connect_reader`] hands
-//! off to `sealmesh::client::connect`, which asks
-//! `sealmesh::github_auth::token` for whatever `gh` hands over, moves it into
-//! the `Hello` frame, and drops it once that frame is sent. Nothing in this
+//! off to `sealmesh::client::connect`, which asks the config's
+//! `sealmesh::credential::CredentialSource` for a token (in cloud mode,
+//! whatever `gh` hands over), moves it into the `Hello` frame, and drops it
+//! once that frame is sent. Nothing in this
 //! crate holds a `SecretToken`, so nothing here can store or log one (rules 6,
 //! 7). A second path that obtains a token would be a second place to get that
 //! wrong; a tool that needs the router calls this instead.
@@ -54,7 +55,7 @@ impl RouterAccess {
     /// The second half of [`Self::connect_reader`]: the CLI's credential path
     /// and the reader handshake, against a config already loaded.
     pub async fn connect_reader_with(config: &Config) -> Result<Connected> {
-        client::connect(&config.server, Role::Reader).await
+        client::connect(config, Role::Reader).await
     }
 }
 

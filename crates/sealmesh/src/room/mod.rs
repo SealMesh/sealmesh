@@ -46,6 +46,7 @@ pub fn room_name(room: &RoomId) -> String {
         Scope::Ticket(ticket) => format!("{}/{ticket}", room.project),
         Scope::Repo(repo) => format!("{}/{repo}", room.project),
         Scope::Project => room.project.to_string(),
+        Scope::Named(name) => format!("#{name}"),
     }
 }
 

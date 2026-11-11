@@ -20,9 +20,16 @@ path = "src/main.rs"
 name = "sealmesh"
 path = "src/lib.rs"
 
+[features]
+default = ["std-router"]
+# The router, embeddable in the daemon for `[mesh] mode = "std"`. The std PR
+# wires it in; this only makes the library available.
+std-router = ["dep:sealmesh-server"]
+
 [dependencies]
 sealmesh-chat-wire = { workspace = true }
 sealmesh-proto = { workspace = true }
+sealmesh-server = { workspace = true, optional = true }
 sealmesh-wire = { workspace = true }
 
 anyhow = { workspace = true }

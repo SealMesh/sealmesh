@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use sealmesh_server::{
+    Listener,
     access_cache::{CachingDirectory, MAX_TTL as ACCESS_CACHE_MAX_TTL},
     check_budget::{CHECKS_PER_HOUR_VAR, CheckBudgets, checks_per_hour_from_env},
     config::{
@@ -15,7 +16,7 @@ use sealmesh_server::{
     },
     github::Github,
     history::{self, RoomHistory, sqlite::SqliteHistory},
-    http::{App, router},
+    http::App,
     listen::{TLS_TERMINATOR_VAR, permit_plaintext},
     projects::{PROJECTS_VAR, ProjectMap},
     room_budget::{TOKENS_PER_HOUR_VAR, tokens_per_hour_from_env},
@@ -274,9 +275,6 @@ async fn main() -> Result<()> {
     let rooms = Rooms::with_limits(room_tokens, turn_cap, history);
     let mut app = App::with_rooms(directory, projects, rooms);
     app.check_budgets = CheckBudgets::new(reader_checks);
-    let app = Arc::new(app);
-    let router = router(app);
-
     let addr = listen_addr(&config);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -301,8 +299,7 @@ async fn main() -> Result<()> {
             reader_checks.get()
         ),
     }
-    axum::serve(listener, router).await.context("serving")?;
-    Ok(())
+    sealmesh_server::run(app, Listener::Tcp(listener)).await
 }
 
 #[cfg(test)]

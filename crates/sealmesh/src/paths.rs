@@ -22,6 +22,18 @@ pub fn local_socket_dir() -> Option<PathBuf> {
     state_home().map(|d| d.join("sealmesh/local"))
 }
 
+/// The directory the std-mode embedded router keeps its per-boot secret in
+/// (and, with the std PR, its socket). 0700, owned by the user running it.
+pub fn local_router_dir() -> Option<PathBuf> {
+    state_home().map(|d| d.join("sealmesh/router"))
+}
+
+/// The std-mode embedded router's per-boot secret: written 0600 by the
+/// router when it starts, read by `CredentialSource::LocalSecret`.
+pub fn local_router_secret() -> Option<PathBuf> {
+    local_router_dir().map(|d| d.join("secret"))
+}
+
 fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {
     resolve(std::env::var_os(var), fallback, dirs::home_dir())
 }
